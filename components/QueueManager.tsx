@@ -107,11 +107,29 @@ export default function QueueManager({
   }, [userId])
 
   // Spara starttider till localStorage
-  const saveStartTimes = (newStartTimes: { [key: string]: number }) => {
+  const saveStartTimes = async (newStartTimes: { [key: string]: number }) => {
     if (userId) {
       try {
+        // Spara lokalt
         localStorage.setItem(`trackStartTimes_${userId}`, JSON.stringify(newStartTimes))
-        console.log('Saved start times for user:', userId)
+        console.log('Saved start times locally for user:', userId)
+        
+        // Spara till databasen
+        const res = await fetch('/api/queues', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ 
+            userId, 
+            startPoints: newStartTimes,
+            useStartTimes: useStartTimes
+          })
+        })
+        
+        if (res.ok) {
+          console.log('Saved start times to database for user:', userId)
+        } else {
+          console.error('Failed to save start times to database')
+        }
       } catch (error) {
         console.error('Fel vid sparande av starttider:', error)
       }
@@ -130,10 +148,10 @@ export default function QueueManager({
     setEditingTrack(trackId)
   }
 
-  const handleStartTimeSave = (trackId: string, startTimeMs: number) => {
+  const handleStartTimeSave = async (trackId: string, startTimeMs: number) => {
     const newStartTimes = { ...startTimes, [trackId]: startTimeMs }
     setStartTimes(newStartTimes)
-    saveStartTimes(newStartTimes)
+    await saveStartTimes(newStartTimes)
     
     // Automatiskt sätta useStartTimes till true för denna låt
     setUseStartTimes(prev => {
@@ -163,7 +181,7 @@ export default function QueueManager({
     setEditingTrack(null)
   }
 
-  const toggleStartTimeUsage = (trackId: string) => {
+  const toggleStartTimeUsage = async (trackId: string) => {
     console.log('toggleStartTimeUsage called for track:', trackId, 'Current state:', useStartTimes[trackId])
     
     setUseStartTimes(prev => {
@@ -180,6 +198,30 @@ export default function QueueManager({
           console.error('Fel vid sparande av useStartTimes:', error)
         }
       }
+      
+      // Spara till databasen
+      const saveToDatabase = async () => {
+        try {
+          const res = await fetch('/api/queues', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ 
+              userId, 
+              startPoints: startTimes,
+              useStartTimes: newUseStartTimes
+            })
+          })
+          
+          if (res.ok) {
+            console.log('Saved useStartTimes to database for user:', userId)
+          } else {
+            console.error('Failed to save useStartTimes to database')
+          }
+        } catch (error) {
+          console.error('Fel vid sparande av useStartTimes till databasen:', error)
+        }
+      }
+      saveToDatabase()
       
       console.log('Toggled start time usage for track:', trackId, 'New state:', newUseStartTimes[trackId], 'All states:', newUseStartTimes)
       

@@ -132,38 +132,76 @@ export default function Home() {
   }, [playlist, userId])
 
   // Ladda sparade starttider för låtar i spellistan
-  const loadSavedStartTimes = (tracks: Track[]) => {
+  const loadSavedStartTimes = async (tracks: Track[]) => {
     if (!userId) return tracks
 
     try {
-      const saved = localStorage.getItem(`trackStartTimes_${userId}`)
-      if (saved) {
-        const startTimes = JSON.parse(saved)
-        
-        // Sätt default useStartTimes för låtar med starttid
-        const newUseStartTimes = { ...useStartTimes }
-        let hasChanges = false
-        
-        tracks.forEach(track => {
-          if (startTimes[track.id] && !(track.id in useStartTimes)) {
-            newUseStartTimes[track.id] = true
-            hasChanges = true
+      // Försök hämta från servern först
+      const serverData = await fetchServerQueuesAndStartPoints(userId)
+      const serverStartPoints = serverData.startPoints || {}
+      const serverUseStartTimes = serverData.useStartTimes || {}
+      
+      console.log('Loaded start points from server:', serverStartPoints)
+      console.log('Loaded use start times from server:', serverUseStartTimes)
+      
+      // Uppdatera useStartTimes från servern
+      if (Object.keys(serverUseStartTimes).length > 0) {
+        setUseStartTimes(serverUseStartTimes)
+        localStorage.setItem(`useStartTimes_${userId}`, JSON.stringify(serverUseStartTimes))
+        console.log('Updated useStartTimes from server:', serverUseStartTimes)
+      }
+      
+      // Fallback till localStorage om servern är tom
+      if (Object.keys(serverStartPoints).length === 0) {
+        const saved = localStorage.getItem(`trackStartTimes_${userId}`)
+        if (saved) {
+          const startTimes = JSON.parse(saved)
+          
+          // Sätt default useStartTimes för låtar med starttid
+          const newUseStartTimes = { ...useStartTimes }
+          let hasChanges = false
+          
+          tracks.forEach(track => {
+            if (startTimes[track.id] && !(track.id in useStartTimes)) {
+              newUseStartTimes[track.id] = true
+              hasChanges = true
+            }
+          })
+          
+          if (hasChanges) {
+            setUseStartTimes(newUseStartTimes)
+            localStorage.setItem(`useStartTimes_${userId}`, JSON.stringify(newUseStartTimes))
+            console.log('Set default useStartTimes for tracks with start times:', newUseStartTimes)
           }
-        })
-        
-        if (hasChanges) {
-          setUseStartTimes(newUseStartTimes)
-          localStorage.setItem(`useStartTimes_${userId}`, JSON.stringify(newUseStartTimes))
-          console.log('Set default useStartTimes for tracks with start times:', newUseStartTimes)
+          
+          return tracks.map(track => ({
+            ...track,
+            startTime: startTimes[track.id] || undefined
+          }))
         }
-        
+      } else {
+        // Använd serverdata
         return tracks.map(track => ({
           ...track,
-          startTime: startTimes[track.id] || undefined
+          startTime: serverStartPoints[track.id] || undefined
         }))
       }
     } catch (error) {
       console.error('Fel vid laddning av sparade starttider:', error)
+      
+      // Fallback till localStorage vid fel
+      try {
+        const saved = localStorage.getItem(`trackStartTimes_${userId}`)
+        if (saved) {
+          const startTimes = JSON.parse(saved)
+          return tracks.map(track => ({
+            ...track,
+            startTime: startTimes[track.id] || undefined
+          }))
+        }
+      } catch (localError) {
+        console.error('Fel vid fallback till localStorage:', localError)
+      }
     }
     return tracks
   }
@@ -171,20 +209,23 @@ export default function Home() {
   // Ladda sparad kö från localStorage när komponenten mountas
   useEffect(() => {
     if (userId) {
-      try {
-        const savedQueue = localStorage.getItem(`spotify_queue_${userId}`)
-        if (savedQueue) {
-          const parsedQueue = JSON.parse(savedQueue)
-          console.log('Loading saved queue for user:', userId, parsedQueue.length, 'tracks')
-          
-          // Ladda starttider för låtar i kön
-          const tracksWithStartTimes = loadSavedStartTimes(parsedQueue)
-          setPlaylist(tracksWithStartTimes)
-          console.log('Queue loaded with start times:', tracksWithStartTimes.map(t => ({ name: t.name, startTime: t.startTime })))
+      const loadQueue = async () => {
+        try {
+          const savedQueue = localStorage.getItem(`spotify_queue_${userId}`)
+          if (savedQueue) {
+            const parsedQueue = JSON.parse(savedQueue)
+            console.log('Loading saved queue for user:', userId, parsedQueue.length, 'tracks')
+            
+            // Ladda starttider för låtar i kön
+            const tracksWithStartTimes = await loadSavedStartTimes(parsedQueue)
+            setPlaylist(tracksWithStartTimes)
+            console.log('Queue loaded with start times:', tracksWithStartTimes.map(t => ({ name: t.name, startTime: t.startTime })))
+          }
+        } catch (error) {
+          console.error('Fel vid laddning av sparad kö:', error)
         }
-      } catch (error) {
-        console.error('Fel vid laddning av sparad kö:', error)
       }
+      loadQueue()
     }
   }, [userId])
 
@@ -313,10 +354,12 @@ export default function Home() {
     setSearchResults([])
   }
 
-  const handleAddToPlaylist = (track: Track) => {
+  const handleAddToPlaylist = async (track: Track) => {
+    // Ladda sparade starttider för den nya låten
+    const tracksWithStartTime = await loadSavedStartTimes([track])
+    const trackWithStartTime = tracksWithStartTime[0]
+    
     setPlaylist(prev => {
-      // Ladda sparade starttider för den nya låten
-      const trackWithStartTime = loadSavedStartTimes([track])[0]
       const newPlaylist = [...prev, trackWithStartTime]
       console.log('Added track to playlist:', track.name, 'with startTime:', trackWithStartTime.startTime)
       return newPlaylist
@@ -479,10 +522,10 @@ export default function Home() {
   }
 
   // Lägg till alla låtar i kön
-  const handleAddAllToQueue = (tracks: Track[]) => {
+  const handleAddAllToQueue = async (tracks: Track[]) => {
+    // Ladda sparade starttider för alla tracks
+    const tracksWithStartTimes = await loadSavedStartTimes(tracks)
     setPlaylist(prev => {
-      // Ladda sparade starttider för alla tracks
-      const tracksWithStartTimes = loadSavedStartTimes(tracks)
       return [...prev, ...tracksWithStartTimes]
     })
   }
@@ -701,9 +744,9 @@ export default function Home() {
                   playlist={playlist}
                   accessToken={accessToken}
                   userId={userId}
-                  onLoadQueue={(tracks, name) => {
+                  onLoadQueue={async (tracks, name) => {
                     // Ladda sparade starttider för alla låtar i kön
-                    const tracksWithStartTimes = loadSavedStartTimes(tracks)
+                    const tracksWithStartTimes = await loadSavedStartTimes(tracks)
                     setPlaylist(tracksWithStartTimes)
                     setPlaylistName(name)
                     console.log('Loaded queue:', { name, trackCount: tracks.length, tracksWithStartTimes: tracksWithStartTimes.map(t => ({ name: t.name, startTime: t.startTime })) })

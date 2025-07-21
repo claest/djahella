@@ -33,18 +33,38 @@ export default function StartTimeEditor({
   // Ladda befintlig starttid
   useEffect(() => {
     if (userId) {
-      try {
-        const saved = localStorage.getItem(`trackStartTimes_${userId}`)
-        if (saved) {
-          const times = JSON.parse(saved)
-          const existingTime = times[trackId] || 0
-          console.log('Loading start time for track:', { trackId, existingTime })
-          setStartTimeMs(existingTime)
-          setStartTimeText(existingTime.toString())
+      const loadStartTime = async () => {
+        try {
+          // Försök hämta från servern först
+          const res = await fetch(`/api/queues?userId=${encodeURIComponent(userId)}`)
+          if (res.ok) {
+            const data = await res.json()
+            const serverStartPoints = data.startPoints || {}
+            const existingTime = serverStartPoints[trackId] || 0
+            console.log('Loading start time from server for track:', { trackId, existingTime })
+            setStartTimeMs(existingTime)
+            setStartTimeText(existingTime.toString())
+            return
+          }
+        } catch (error) {
+          console.error('Fel vid laddning av starttid från server:', error)
         }
-      } catch (error) {
-        console.error('Fel vid laddning av starttid:', error)
+        
+        // Fallback till localStorage
+        try {
+          const saved = localStorage.getItem(`trackStartTimes_${userId}`)
+          if (saved) {
+            const times = JSON.parse(saved)
+            const existingTime = times[trackId] || 0
+            console.log('Loading start time from localStorage for track:', { trackId, existingTime })
+            setStartTimeMs(existingTime)
+            setStartTimeText(existingTime.toString())
+          }
+        } catch (error) {
+          console.error('Fel vid laddning av starttid från localStorage:', error)
+        }
       }
+      loadStartTime()
     }
   }, [trackId, userId])
 

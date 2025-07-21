@@ -71,28 +71,45 @@ export default function QueueSaver({ playlist, accessToken, userId, onLoadQueue 
   const saveQueuesToServer = async (queues: SavedQueue[]) => {
     if (!userId) return
     try {
+      // Hämta befintliga starttider och useStartTimes från servern först
+      const res = await fetch(`/api/queues?userId=${encodeURIComponent(userId)}`)
+      let existingStartPoints = {}
+      let existingUseStartTimes = {}
+      
+      if (res.ok) {
+        const data = await res.json()
+        existingStartPoints = data.startPoints || {}
+        existingUseStartTimes = data.useStartTimes || {}
+      }
+      
       await fetch('/api/queues', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ userId, queues, startPoints: {} })
+        body: JSON.stringify({ 
+          userId, 
+          queues, 
+          startPoints: existingStartPoints,
+          useStartTimes: existingUseStartTimes
+        })
       })
+      console.log('Köer sparade till servern med befintliga starttider:', existingStartPoints)
     } catch (error) {
       console.error('Fel vid sparande av köer till servern:', error)
     }
   }
 
   // Modifierad: Spara köer till både localStorage och server
-  const saveQueuesToStorage = (queues: SavedQueue[]) => {
+  const saveQueuesToStorage = async (queues: SavedQueue[]) => {
     if (!userId) return
     try {
       localStorage.setItem(`spotify_queues_${userId}`, JSON.stringify(queues))
-      saveQueuesToServer(queues)
+      await saveQueuesToServer(queues)
     } catch (error) {
       console.error('Fel vid sparande av köer:', error)
     }
   }
 
-  const handleSaveQueue = () => {
+  const handleSaveQueue = async () => {
     if (!userId || !saveName.trim() || playlist.length === 0) return
 
     setIsLoading(true)
@@ -111,7 +128,7 @@ export default function QueueSaver({ playlist, accessToken, userId, onLoadQueue 
       
       const updatedQueues = [...savedQueues, newQueue]
       setSavedQueues(updatedQueues)
-      saveQueuesToStorage(updatedQueues)
+      await saveQueuesToStorage(updatedQueues)
       
       setSaveName('')
       setShowSaveDialog(false)
@@ -131,20 +148,20 @@ export default function QueueSaver({ playlist, accessToken, userId, onLoadQueue 
     }
   }
 
-  const handleDeleteQueue = (queueId: string) => {
+  const handleDeleteQueue = async (queueId: string) => {
     if (!confirm('Är du säker på att du vill ta bort denna kö?')) return
 
     try {
       const updatedQueues = savedQueues.filter(q => q.id !== queueId)
       setSavedQueues(updatedQueues)
-      saveQueuesToStorage(updatedQueues)
+      await saveQueuesToStorage(updatedQueues)
       console.log('Kö borttagen')
     } catch (error) {
       console.error('Fel vid borttagning av kö:', error)
     }
   }
 
-  const handleEditQueue = (queueId: string) => {
+  const handleEditQueue = async (queueId: string) => {
     if (!editName.trim()) return
 
     try {
@@ -154,7 +171,7 @@ export default function QueueSaver({ playlist, accessToken, userId, onLoadQueue 
           : q
       )
       setSavedQueues(updatedQueues)
-      saveQueuesToStorage(updatedQueues)
+      await saveQueuesToStorage(updatedQueues)
       setEditingQueueId(null)
       setEditName('')
       console.log('Kö redigerad')
