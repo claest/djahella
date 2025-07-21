@@ -551,6 +551,10 @@ export default function Home() {
       try {
         localUseStartTimes = JSON.parse(localStorage.getItem(`useStartTimes_${userId}`) || '{}')
       } catch {}
+      console.log('DEBUG: localQueues', localQueues)
+      console.log('DEBUG: localStartPoints', localStartPoints)
+      console.log('DEBUG: localUseStartTimes', localUseStartTimes)
+      console.log('DEBUG: serverData', serverData)
       // NYTT: Om localQueues är tom, kolla även efter spotify_queue_${userId} (en array av tracks)
       if ((!localQueues || localQueues.length === 0) && localStorage.getItem(`spotify_queue_${userId}`)) {
         try {
@@ -588,6 +592,7 @@ export default function Home() {
       const needsMigration = (serverData.queues?.length === 0 && queuesToMigrate.length > 0) ||
                             (Object.keys(serverData.startPoints || {}).length === 0 && Object.keys(localStartPoints).length > 0) ||
                             (Object.keys(serverData.useStartTimes || {}).length === 0 && Object.keys(localUseStartTimes).length > 0)
+      console.log('DEBUG: needsMigration', needsMigration)
       if (needsMigration) {
         const resp = await fetch('/api/queues', {
           method: 'POST',
