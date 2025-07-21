@@ -9,9 +9,10 @@ interface PlaylistViewerProps {
   onRemoveTrack: (index: number) => void
   onPlayTrack: (track: Track, startTimeMs?: number) => void
   accessToken?: string | null
+  userId: string // Ny prop
 }
 
-export default function PlaylistViewer({ playlist, onRemoveTrack, onPlayTrack, accessToken }: PlaylistViewerProps) {
+export default function PlaylistViewer({ playlist, onRemoveTrack, onPlayTrack, accessToken, userId }: PlaylistViewerProps) {
   const [editingTrack, setEditingTrack] = useState<string | null>(null)
   const [startTimes, setStartTimes] = useState<{ [key: string]: number }>({})
   const [useStartTimes, setUseStartTimes] = useState<{ [key: string]: boolean }>({})
@@ -19,7 +20,7 @@ export default function PlaylistViewer({ playlist, onRemoveTrack, onPlayTrack, a
 
   // Ladda sparade starttider från localStorage
   useEffect(() => {
-    if (accessToken) {
+    if (userId) {
       try {
         const saved = localStorage.getItem(`trackStartTimes_${userId}`)
         if (saved) {
@@ -28,7 +29,7 @@ export default function PlaylistViewer({ playlist, onRemoveTrack, onPlayTrack, a
           console.log('PlaylistViewer loaded start times:', times)
           
           // Ladda också useStartTimes-inställningar
-          const savedUseStartTimes = localStorage.getItem(`useStartTimes_${accessToken}`)
+          const savedUseStartTimes = localStorage.getItem(`useStartTimes_${userId}`)
           if (savedUseStartTimes) {
             const useStartTimesData = JSON.parse(savedUseStartTimes)
             setUseStartTimes(useStartTimesData)
@@ -47,7 +48,7 @@ export default function PlaylistViewer({ playlist, onRemoveTrack, onPlayTrack, a
         console.error('Fel vid laddning av starttider:', error)
       }
     }
-  }, [accessToken])
+  }, [userId])
 
   // Spara starttider till localStorage
   const saveStartTimes = (newStartTimes: { [key: string]: number }) => {

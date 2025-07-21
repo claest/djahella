@@ -9,6 +9,7 @@ import QueueSaver from '@/components/QueueSaver'
 import SpotifyPlaylistLoader from '@/components/SpotifyPlaylistLoader'
 import QueueManager from '@/components/QueueManager'
 import { useSpotifyPlayer } from '@/hooks/useSpotifyPlayer'
+import PlaylistViewer from '@/components/PlaylistViewer'
 
 export default function Home() {
   const [searchResults, setSearchResults] = useState<Track[]>([])
@@ -545,6 +546,15 @@ export default function Home() {
                 </>
               )}
             </div>
+
+            {/* Visa spellista */}
+            <PlaylistViewer
+              playlist={playlist}
+              onRemoveTrack={handleRemoveFromPlaylist}
+              onPlayTrack={handlePlayTrack}
+              accessToken={accessToken}
+              userId={userId || ''}
+            />
 
             {/* Kö-hantering */}
             <div className="mb-8">
