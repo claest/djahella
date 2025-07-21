@@ -134,8 +134,6 @@ export default function SpotifyPlaylistLoader({ accessToken, onAddToPlaylist, on
 
   return (
     <div className="space-y-4">
-      <h4 className="text-lg font-semibold text-white">Spotify-spellistor</h4>
-      
       {isLoading ? (
         <div className="text-gray-400">Laddar spellistor...</div>
       ) : playlists.length === 0 ? (

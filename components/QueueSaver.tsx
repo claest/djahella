@@ -25,10 +25,32 @@ export default function QueueSaver({ playlist, accessToken, userId, onLoadQueue 
   const [editName, setEditName] = useState('')
   const [showSaveDialog, setShowSaveDialog] = useState(false)
 
-  // Ladda sparade köer när komponenten mountas
+  // Ny: Hämta köer från servern
+  const fetchQueuesFromServer = async (userId: string): Promise<SavedQueue[]> => {
+    try {
+      const res = await fetch(`/api/queues?userId=${encodeURIComponent(userId)}`)
+      if (!res.ok) return []
+      const data = await res.json()
+      return data.queues || []
+    } catch (error) {
+      console.error('Fel vid hämtning av köer från servern:', error)
+      return []
+    }
+  }
+
+  // Modifierad: Ladda sparade köer när komponenten mountas
   useEffect(() => {
     if (accessToken && userId) {
-      loadSavedQueues()
+      (async () => {
+        // 1. Försök hämta från servern
+        const serverQueues = await fetchQueuesFromServer(userId)
+        if (serverQueues.length > 0) {
+          setSavedQueues(serverQueues)
+        } else {
+          // 2. Om servern är tom, hämta från localStorage
+          loadSavedQueues()
+        }
+      })()
     }
   }, [accessToken, userId])
 
@@ -45,11 +67,26 @@ export default function QueueSaver({ playlist, accessToken, userId, onLoadQueue 
     }
   }
 
+  // Ny: Spara köer till servern
+  const saveQueuesToServer = async (queues: SavedQueue[]) => {
+    if (!userId) return
+    try {
+      await fetch('/api/queues', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId, queues, startPoints: {} })
+      })
+    } catch (error) {
+      console.error('Fel vid sparande av köer till servern:', error)
+    }
+  }
+
+  // Modifierad: Spara köer till både localStorage och server
   const saveQueuesToStorage = (queues: SavedQueue[]) => {
     if (!userId) return
-
     try {
       localStorage.setItem(`spotify_queues_${userId}`, JSON.stringify(queues))
+      saveQueuesToServer(queues)
     } catch (error) {
       console.error('Fel vid sparande av köer:', error)
     }
@@ -148,7 +185,6 @@ export default function QueueSaver({ playlist, accessToken, userId, onLoadQueue 
           Spara kö ({playlist.length} låtar)
         </button>
       </div>
-
       {/* Spara dialog */}
       {showSaveDialog && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
@@ -183,74 +219,70 @@ export default function QueueSaver({ playlist, accessToken, userId, onLoadQueue 
           </div>
         </div>
       )}
-
       {/* Sparade köer */}
-      {savedQueues.length > 0 && (
-        <div>
-          <h4 className="text-lg font-semibold text-white mb-3">Sparade köer</h4>
-          <div className="space-y-2">
-            {savedQueues.map((queue) => (
-              <div key={queue.id} className="bg-spotify-black p-3 rounded border border-gray-700">
-                {editingQueueId === queue.id ? (
-                  <div className="flex items-center space-x-2">
-                    <input
-                      type="text"
-                      value={editName}
-                      onChange={(e) => setEditName(e.target.value)}
-                      className="flex-1 p-1 bg-spotify-dark text-white border border-gray-600 rounded text-sm"
-                      autoFocus
-                    />
+      <div>
+        <div className="space-y-2">
+          {savedQueues.map((queue) => (
+            <div key={queue.id} className="bg-spotify-black p-3 rounded border border-gray-700">
+              {editingQueueId === queue.id ? (
+                <div className="flex items-center space-x-2">
+                  <input
+                    type="text"
+                    value={editName}
+                    onChange={(e) => setEditName(e.target.value)}
+                    className="flex-1 p-1 bg-spotify-dark text-white border border-gray-600 rounded text-sm"
+                    autoFocus
+                  />
+                  <button
+                    onClick={() => handleEditQueue(queue.id)}
+                    className="px-2 py-1 bg-spotify-green text-black text-xs rounded hover:bg-green-400"
+                  >
+                    Spara
+                  </button>
+                  <button
+                    onClick={cancelEditing}
+                    className="px-2 py-1 bg-gray-600 text-white text-xs rounded hover:bg-gray-700"
+                  >
+                    Avbryt
+                  </button>
+                </div>
+              ) : (
+                <div className="flex items-center justify-between">
+                  <div className="flex-1">
+                    <p className="text-white font-medium">{queue.name}</p>
+                    <p className="text-sm text-gray-400">
+                      {queue.tracks.length} låtar • {new Date(queue.updatedAt).toLocaleDateString('sv-SE')}
+                    </p>
+                  </div>
+                  <div className="flex space-x-1">
                     <button
-                      onClick={() => handleEditQueue(queue.id)}
-                      className="px-2 py-1 bg-spotify-green text-black text-xs rounded hover:bg-green-400"
+                      onClick={() => handleLoadQueue(queue.id)}
+                      className="px-2 py-1 bg-blue-600 text-white text-xs rounded hover:bg-blue-700"
+                      title="Ladda kö"
                     >
-                      Spara
+                      Ladda
                     </button>
                     <button
-                      onClick={cancelEditing}
-                      className="px-2 py-1 bg-gray-600 text-white text-xs rounded hover:bg-gray-700"
+                      onClick={() => startEditing(queue)}
+                      className="px-2 py-1 bg-yellow-600 text-white text-xs rounded hover:bg-yellow-700"
+                      title="Byt namn"
                     >
-                      Avbryt
+                      Redigera
+                    </button>
+                    <button
+                      onClick={() => handleDeleteQueue(queue.id)}
+                      className="px-2 py-1 bg-red-600 text-white text-xs rounded hover:bg-red-700"
+                      title="Ta bort"
+                    >
+                      Ta bort
                     </button>
                   </div>
-                ) : (
-                  <div className="flex items-center justify-between">
-                    <div className="flex-1">
-                      <p className="text-white font-medium">{queue.name}</p>
-                      <p className="text-sm text-gray-400">
-                        {queue.tracks.length} låtar • {new Date(queue.updatedAt).toLocaleDateString('sv-SE')}
-                      </p>
-                    </div>
-                    <div className="flex space-x-1">
-                      <button
-                        onClick={() => handleLoadQueue(queue.id)}
-                        className="px-2 py-1 bg-blue-600 text-white text-xs rounded hover:bg-blue-700"
-                        title="Ladda kö"
-                      >
-                        Ladda
-                      </button>
-                      <button
-                        onClick={() => startEditing(queue)}
-                        className="px-2 py-1 bg-yellow-600 text-white text-xs rounded hover:bg-yellow-700"
-                        title="Byt namn"
-                      >
-                        Redigera
-                      </button>
-                      <button
-                        onClick={() => handleDeleteQueue(queue.id)}
-                        className="px-2 py-1 bg-red-600 text-white text-xs rounded hover:bg-red-700"
-                        title="Ta bort"
-                      >
-                        Ta bort
-                      </button>
-                    </div>
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
+                </div>
+              )}
+            </div>
+          ))}
         </div>
-      )}
+      </div>
     </div>
   )
 } 

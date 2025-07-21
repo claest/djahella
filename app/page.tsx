@@ -11,6 +11,21 @@ import QueueManager from '@/components/QueueManager'
 import { useSpotifyPlayer } from '@/hooks/useSpotifyPlayer'
 import PlaylistViewer from '@/components/PlaylistViewer'
 
+// --- Server-synk och migrering ---
+async function fetchServerQueuesAndStartPoints(userId: string) {
+  const res = await fetch(`/api/queues?userId=${encodeURIComponent(userId)}`)
+  if (!res.ok) return { queues: [], startPoints: {} }
+  return await res.json()
+}
+
+async function saveServerQueuesAndStartPoints(userId: string, queues: any[], startPoints: any) {
+  await fetch('/api/queues', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ userId, queues, startPoints })
+  })
+}
+
 export default function Home() {
   const [searchResults, setSearchResults] = useState<Track[]>([])
   const [playlist, setPlaylist] = useState<Track[]>([])
@@ -22,6 +37,8 @@ export default function Home() {
   const [currentTrackIndex, setCurrentTrackIndex] = useState<number>(-1)
   const [isShuffled, setIsShuffled] = useState(false)
   const [useStartTimes, setUseStartTimes] = useState<{ [key: string]: boolean }>({})
+  const [showQueues, setShowQueues] = useState(true)
+  const [showSpotifyLists, setShowSpotifyLists] = useState(true)
 
   // Spotify Player hook
   const {
@@ -515,6 +532,114 @@ export default function Home() {
     console.log('Kö rensad, starttid-inställningar behållna')
   }
 
+  // --- Migrering och synk vid inloggning ---
+  useEffect(() => {
+    if (!userId) return
+    (async () => {
+      // 1. Hämta från servern
+      const serverData = await fetch(`/api/queues?userId=${encodeURIComponent(userId)}`)
+        .then(res => res.json())
+      let localQueues = []
+      let localStartPoints = {}
+      let localUseStartTimes = {}
+      try {
+        localQueues = JSON.parse(localStorage.getItem(`spotify_queues_${userId}`) || '[]')
+      } catch {}
+      try {
+        localStartPoints = JSON.parse(localStorage.getItem(`trackStartTimes_${userId}`) || '{}')
+      } catch {}
+      try {
+        localUseStartTimes = JSON.parse(localStorage.getItem(`useStartTimes_${userId}`) || '{}')
+      } catch {}
+      // NYTT: Om localQueues är tom, kolla även efter spotify_queue_${userId} (en array av tracks)
+      if ((!localQueues || localQueues.length === 0) && localStorage.getItem(`spotify_queue_${userId}`)) {
+        try {
+          const singleQueue = JSON.parse(localStorage.getItem(`spotify_queue_${userId}`) || '[]')
+          if (Array.isArray(singleQueue) && singleQueue.length > 0) {
+            localQueues = [{
+              id: `migrated_${Date.now()}`,
+              userId,
+              name: 'Migrerad kö',
+              tracks: singleQueue,
+              createdAt: new Date().toISOString(),
+              updatedAt: new Date().toISOString()
+            }]
+            console.log('Migrerar från spotify_queue_${userId} (array av tracks):', localQueues)
+          }
+        } catch (e) {
+          console.error('Fel vid migrering från spotify_queue:', e)
+        }
+      }
+      // 2. Om servern saknar data men localStorage har, migrera
+      let queuesToMigrate = localQueues
+      if (Array.isArray(localQueues) && localQueues.length > 0 && !localQueues[0].tracks) {
+        queuesToMigrate = [{
+          id: `migrated_${Date.now()}`,
+          userId,
+          name: 'Migrerad kö',
+          tracks: localQueues,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString()
+        }]
+        console.log('Migrerar tracks-array som kö-objekt:', queuesToMigrate)
+      } else {
+        console.log('Migrerar kö-objekt:', queuesToMigrate)
+      }
+      const needsMigration = (serverData.queues?.length === 0 && queuesToMigrate.length > 0) ||
+                            (Object.keys(serverData.startPoints || {}).length === 0 && Object.keys(localStartPoints).length > 0) ||
+                            (Object.keys(serverData.useStartTimes || {}).length === 0 && Object.keys(localUseStartTimes).length > 0)
+      if (needsMigration) {
+        const resp = await fetch('/api/queues', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ userId, queues: queuesToMigrate, startPoints: localStartPoints, useStartTimes: localUseStartTimes })
+        })
+        const respJson = await resp.json()
+        console.log('Svar från migrerings-POST:', resp.status, respJson)
+        // Rensa localStorage
+        localStorage.removeItem(`spotify_queues_${userId}`)
+        localStorage.removeItem(`trackStartTimes_${userId}`)
+        localStorage.removeItem(`useStartTimes_${userId}`)
+        alert('Dina köer, startpunkter och starttidsval har nu flyttats till servern och är tillgängliga på alla enheter!')
+        // Hämta igen från servern efter migrering
+        const newServerData = await fetch(`/api/queues?userId=${encodeURIComponent(userId)}`).then(res => res.json())
+        if (newServerData.queues && newServerData.queues.length > 0) {
+          setPlaylist(newServerData.queues[0].tracks || [])
+        }
+        if (newServerData.startPoints) {
+          setUseStartTimes(newServerData.useStartTimes || {})
+        }
+      } else {
+        // Ingen migrering, ladda från servern
+        if (serverData.queues && serverData.queues.length > 0) {
+          setPlaylist(serverData.queues[0].tracks || [])
+        }
+        if (serverData.useStartTimes) {
+          setUseStartTimes(serverData.useStartTimes)
+        }
+      }
+    })()
+  }, [userId])
+
+  // Spara useStartTimes till servern och localStorage vid ändring
+  useEffect(() => {
+    if (!userId) return
+    localStorage.setItem(`useStartTimes_${userId}`, JSON.stringify(useStartTimes))
+    // Hämta aktuell data från servern först
+    const syncUseStartTimes = async () => {
+      const serverData = await fetch(`/api/queues?userId=${encodeURIComponent(userId)}`).then(res => res.json())
+      const queues = serverData.queues || []
+      const startPoints = serverData.startPoints || {}
+      // Skicka tillbaka hela objektet, men med uppdaterad useStartTimes
+      await fetch('/api/queues', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId, queues, startPoints, useStartTimes })
+      })
+    }
+    syncUseStartTimes()
+  }, [useStartTimes, userId])
+
   return (
     <div className="min-h-screen bg-spotify-black">
       {!accessToken ? (
@@ -557,27 +682,48 @@ export default function Home() {
                 </>
               )}
             </div>
-            {/* Ta bort PlaylistViewer här */}
-            <SpotifyPlaylistLoader
-              accessToken={accessToken}
-              onAddToPlaylist={handleAddToPlaylist}
-              onPlayTrack={handlePlayTrack}
-              onAddAllToQueue={handleAddAllToQueue}
-            />
-            {/* Lägg tillbaka QueueSaver här */}
-            <div className="mt-8">
-              <QueueSaver
-                playlist={playlist}
-                accessToken={accessToken}
-                userId={userId}
-                onLoadQueue={(tracks, name) => {
-                  // Ladda sparade starttider för alla låtar i kön
-                  const tracksWithStartTimes = loadSavedStartTimes(tracks)
-                  setPlaylist(tracksWithStartTimes)
-                  setPlaylistName(name)
-                  console.log('Loaded queue:', { name, trackCount: tracks.length, tracksWithStartTimes: tracksWithStartTimes.map(t => ({ name: t.name, startTime: t.startTime })) })
-                }}
-              />
+            {/* Sparade köer */}
+            <div className="mb-6">
+              <button
+                onClick={() => setShowQueues(v => !v)}
+                className="w-full flex items-center justify-between px-4 py-2 bg-gray-700 text-white font-semibold rounded-lg hover:bg-gray-600 mb-2"
+              >
+                <span>Sparade köer (lokalt)</span>
+                <span>{showQueues ? '▲' : '▼'}</span>
+              </button>
+              {showQueues && (
+                <QueueSaver
+                  playlist={playlist}
+                  accessToken={accessToken}
+                  userId={userId}
+                  onLoadQueue={(tracks, name) => {
+                    // Ladda sparade starttider för alla låtar i kön
+                    const tracksWithStartTimes = loadSavedStartTimes(tracks)
+                    setPlaylist(tracksWithStartTimes)
+                    setPlaylistName(name)
+                    console.log('Loaded queue:', { name, trackCount: tracks.length, tracksWithStartTimes: tracksWithStartTimes.map(t => ({ name: t.name, startTime: t.startTime })) })
+                  }}
+                />
+              )}
+              <div className="text-xs text-gray-400 mt-1">Köer sparas endast i denna webbläsare, inte på Spotify-kontot.</div>
+            </div>
+            {/* Spotify-spellistor */}
+            <div className="mb-6">
+              <button
+                onClick={() => setShowSpotifyLists(v => !v)}
+                className="w-full flex items-center justify-between px-4 py-2 bg-gray-700 text-white font-semibold rounded-lg hover:bg-gray-600 mb-2"
+              >
+                <span>Spotify-spellistor</span>
+                <span>{showSpotifyLists ? '▲' : '▼'}</span>
+              </button>
+              {showSpotifyLists && (
+                <SpotifyPlaylistLoader
+                  accessToken={accessToken}
+                  onAddToPlaylist={handleAddToPlaylist}
+                  onPlayTrack={handlePlayTrack}
+                  onAddAllToQueue={handleAddAllToQueue}
+                />
+              )}
             </div>
             {/* Resten av vänsterpanelen ... */}
 
