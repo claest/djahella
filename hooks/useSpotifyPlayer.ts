@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { SpotifyPlayer, SpotifyPlaybackState, SpotifyTrack } from '@/types/spotify'
+import { SpotifyPlayer, SpotifyPlaybackState, SpotifyTrack, SpotifyDevice } from '@/types/spotify'
 
 declare global {
   interface Window {
@@ -23,6 +23,8 @@ export const useSpotifyPlayer = (accessToken: string | null, onTrackEnd?: () => 
   const [deviceId, setDeviceId] = useState<string | null>(null)
   const [isReady, setIsReady] = useState(false)
   const [isInitializing, setIsInitializing] = useState(false)
+  const [devices, setDevices] = useState<SpotifyDevice[]>([])
+  const [activeDeviceId, setActiveDeviceId] = useState<string | null>(null)
 
   
   const playerRef = useRef<SpotifyPlayer | null>(null)
@@ -235,6 +237,37 @@ export const useSpotifyPlayer = (accessToken: string | null, onTrackEnd?: () => 
       initializePlayer(accessToken)
     }
   }, [accessToken, initializePlayer, isInitializing])
+
+  // Funktion för att hämta tillgängliga enheter
+  const fetchDevices = useCallback(async () => {
+    if (!accessTokenRef.current) return
+    try {
+      const response = await fetch('https://api.spotify.com/v1/me/player/devices', {
+        headers: {
+          'Authorization': `Bearer ${accessTokenRef.current}`
+        }
+      })
+      if (response.ok) {
+        const data = await response.json()
+        setDevices(data.devices)
+        const active = data.devices.find((d: SpotifyDevice) => d.is_active)
+        setActiveDeviceId(active ? active.id : null)
+      } else {
+        setDevices([])
+        setActiveDeviceId(null)
+      }
+    } catch (error) {
+      setDevices([])
+      setActiveDeviceId(null)
+    }
+  }, [])
+
+  // Hämta enheter när accessToken ändras eller när spelaren blir redo
+  useEffect(() => {
+    if (accessToken && isReady) {
+      fetchDevices()
+    }
+  }, [accessToken, isReady, fetchDevices])
 
   // Spela en låt med Track-objekt
   const playTrack = useCallback(async (track: any, startTimeMs?: number) => {
@@ -554,6 +587,10 @@ export const useSpotifyPlayer = (accessToken: string | null, onTrackEnd?: () => 
     pauseTrack: pause,
     resumeTrack: play,
     playNext: nextTrack,
-    playPrevious: previousTrack
+    playPrevious: previousTrack,
+    // Nya för enhetshantering
+    devices,
+    activeDeviceId,
+    fetchDevices
   }
 } 

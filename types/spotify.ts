@@ -106,4 +106,14 @@ export interface SpotifyTrack {
 export interface SpotifyError {
   message: string
   status: number
+}
+
+// Typ för Spotify Device (enhet)
+export interface SpotifyDevice {
+  id: string
+  is_active: boolean
+  is_restricted: boolean
+  name: string
+  type: string // t.ex. 'Computer', 'Smartphone', 'Speaker'
+  volume_percent: number
 } 

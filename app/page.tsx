@@ -38,7 +38,11 @@ export default function Home() {
     seekTo,
     playNext,
     playPrevious,
-    isReady
+    isReady,
+    // Nya för enhetshantering
+    devices,
+    activeDeviceId,
+    fetchDevices
   } = useSpotifyPlayer(accessToken, () => {
     // Använd ref för att anropa handlePlayNext när den är redo
     console.log('onTrackEnd callback triggered, checking onTrackEndRef.current:', !!onTrackEndRef.current)
@@ -588,30 +592,61 @@ export default function Home() {
 
           {/* Höger panel - Kö och nuvarande låt */}
           <div className="w-1/2 bg-spotify-black p-6">
-                          <QueueManager
-                playlist={playlist}
-                onRemoveTrack={handleRemoveFromPlaylist}
-                onPlayTrack={handlePlayTrack}
-                onPlayNext={handlePlayNext}
-                onPlayPrevious={handlePlayPrevious}
-                onTogglePlay={handleTogglePlay}
-                onVolumeChange={handleVolumeChange}
-                onSeek={handleSeek}
-                onShuffle={handleShuffle}
-                isPlaying={isPlaying}
-                currentTrack={currentTrack}
-                currentTime={currentTime}
-                duration={duration}
-                volume={volume}
-                isShuffled={isShuffled}
-                currentTrackIndex={currentTrackIndex}
-                onReorderTracks={handleReorderTracks}
-                onClearQueue={handleClearQueue}
-                accessToken={accessToken}
-                userId={userId}
-                useStartTimes={useStartTimes}
-                setUseStartTimes={setUseStartTimes}
-              />
+            {/* Enhetsval och status */}
+            <div className="mb-6">
+              <h2 className="text-lg font-semibold text-white mb-2">Spotify-enheter</h2>
+              {devices.length === 0 ? (
+                <div className="text-spotify-light text-sm">Inga enheter hittades. Se till att du har minst en Spotify-app igång.</div>
+              ) : (
+                <ul className="mb-2">
+                  {devices.map(device => (
+                    <li key={device.id} className={`flex items-center space-x-2 text-sm ${device.is_active ? 'text-spotify-green font-bold' : 'text-white'}`}>
+                      <span>{device.name}</span>
+                      <span className="text-xs text-gray-400">({device.type})</span>
+                      {device.is_active && <span className="ml-2 px-2 py-0.5 bg-green-700 text-white rounded text-xs">Aktiv</span>}
+                      {device.id === activeDeviceId && !device.is_active && <span className="ml-2 px-2 py-0.5 bg-yellow-600 text-white rounded text-xs">Vald (ej aktiv)</span>}
+                    </li>
+                  ))}
+                </ul>
+              )}
+              {/* Varning om webbläsarspelaren inte är aktiv */}
+              {devices.length > 0 && devices.every(d => !d.is_active || d.id !== activeDeviceId) && (
+                <div className="bg-yellow-700 text-white text-xs rounded px-3 py-2 mt-2">
+                  Webbläsarspelaren är inte aktiv. Välj "Spotify Playlist Creator" som enhet i Spotify-appen för att spela härifrån.
+                </div>
+              )}
+              <button
+                onClick={fetchDevices}
+                className="mt-2 px-3 py-1 bg-gray-700 text-white text-xs rounded hover:bg-gray-600"
+              >
+                Uppdatera enhetslista
+              </button>
+            </div>
+            {/* Resten av högerpanelen */}
+            <QueueManager
+              playlist={playlist}
+              onRemoveTrack={handleRemoveFromPlaylist}
+              onPlayTrack={handlePlayTrack}
+              onPlayNext={handlePlayNext}
+              onPlayPrevious={handlePlayPrevious}
+              onTogglePlay={handleTogglePlay}
+              onVolumeChange={handleVolumeChange}
+              onSeek={handleSeek}
+              onShuffle={handleShuffle}
+              isPlaying={isPlaying}
+              currentTrack={currentTrack}
+              currentTime={currentTime}
+              duration={duration}
+              volume={volume}
+              isShuffled={isShuffled}
+              currentTrackIndex={currentTrackIndex}
+              onReorderTracks={handleReorderTracks}
+              onClearQueue={handleClearQueue}
+              accessToken={accessToken}
+              userId={userId}
+              useStartTimes={useStartTimes}
+              setUseStartTimes={setUseStartTimes}
+            />
           </div>
         </div>
       )}

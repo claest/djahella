@@ -57,12 +57,15 @@ export default function QueueManager({
   const [editingTrack, setEditingTrack] = useState<string | null>(null)
   const [startTimes, setStartTimes] = useState<{ [key: string]: number }>({})
   const [internalUseStartTimes, setInternalUseStartTimes] = useState<{ [key: string]: boolean }>({})
+  const [fadeProgress, setFadeProgress] = useState(0)
   
   // Använd externa useStartTimes om de finns, annars interna
   const useStartTimes = externalUseStartTimes || internalUseStartTimes
   const setUseStartTimes = externalSetUseStartTimes || setInternalUseStartTimes
   const [draggedIndex, setDraggedIndex] = useState<number | null>(null)
   const [dragOverIndex, setDragOverIndex] = useState<number | null>(null)
+  const [isFading, setIsFading] = useState(false)
+  const fadeTimeoutRef = useRef<NodeJS.Timeout | null>(null)
 
   console.log('QueueManager render:', {
     playlistLength: playlist.length,
@@ -299,6 +302,41 @@ export default function QueueManager({
       onSeek(seekPositionMs)
     }
   }
+
+  // Fade-funktion
+  const handleNextWithFade = async () => {
+    if (isFading) return // förhindra dubbelklick
+    setIsFading(true)
+    setFadeProgress(0)
+    let fadeDuration = 10000 // 10 sekunder
+    const timeLeft = duration - currentTime
+    if (timeLeft < fadeDuration) fadeDuration = timeLeft
+    const steps = 20
+    const stepTime = fadeDuration / steps
+    const startVolume = volume
+    for (let i = 1; i <= steps; i++) {
+      fadeTimeoutRef.current = setTimeout(() => {
+        const newVolume = Math.max(0, Math.round(startVolume * (1 - i / steps)))
+        onVolumeChange(newVolume)
+        setFadeProgress(i / steps)
+        if (i === steps) {
+          setTimeout(() => {
+            onPlayNext()
+            setTimeout(() => {
+              onVolumeChange(startVolume)
+              setIsFading(false)
+              setFadeProgress(0)
+            }, 500)
+          }, 200)
+        }
+      }, i * stepTime)
+    }
+  }
+  useEffect(() => {
+    return () => {
+      if (fadeTimeoutRef.current) clearTimeout(fadeTimeoutRef.current)
+    }
+  }, [])
 
   return (
     <div className="h-full flex flex-col">
@@ -585,7 +623,26 @@ export default function QueueManager({
               >
                 NEXT
               </button>
+              <button
+                onClick={handleNextWithFade}
+                className="p-2 bg-yellow-600 text-white rounded-full hover:bg-yellow-700 border border-yellow-700 ml-2 disabled:opacity-50"
+                title="Nästa låt med fade"
+                disabled={isFading}
+              >
+                Next with fade
+              </button>
             </div>
+            {isFading && (
+              <div className="w-full mt-2 flex flex-col items-center">
+                <div className="w-2/3 h-2 bg-gray-700 rounded-full overflow-hidden">
+                  <div
+                    className="h-2 bg-yellow-400 transition-all"
+                    style={{ width: `${Math.round(fadeProgress * 100)}%` }}
+                  />
+                </div>
+                <span className="text-xs text-yellow-300 mt-1">Fadar ut... {Math.round(fadeProgress * 100)}%</span>
+              </div>
+            )}
 
             {/* Volym */}
             <div className="flex items-center space-x-2">
