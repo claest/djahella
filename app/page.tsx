@@ -564,6 +564,21 @@ export default function Home() {
               onPlayTrack={handlePlayTrack}
               onAddAllToQueue={handleAddAllToQueue}
             />
+            {/* Lägg tillbaka QueueSaver här */}
+            <div className="mt-8">
+              <QueueSaver
+                playlist={playlist}
+                accessToken={accessToken}
+                userId={userId}
+                onLoadQueue={(tracks, name) => {
+                  // Ladda sparade starttider för alla låtar i kön
+                  const tracksWithStartTimes = loadSavedStartTimes(tracks)
+                  setPlaylist(tracksWithStartTimes)
+                  setPlaylistName(name)
+                  console.log('Loaded queue:', { name, trackCount: tracks.length, tracksWithStartTimes: tracksWithStartTimes.map(t => ({ name: t.name, startTime: t.startTime })) })
+                }}
+              />
+            </div>
             {/* Resten av vänsterpanelen ... */}
 
 
