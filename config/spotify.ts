@@ -1,7 +1,7 @@
 export const spotifyConfig = {
   // Redirect URI för olika miljöer
   redirectUri: process.env.NODE_ENV === 'production' 
-    ? 'https://din-produktions-domain.com'  // Ändra till din faktiska produktions-URL
+    ? 'https://djahella.vercel.app/'  // Uppdaterad till korrekt produktions-URL
     : 'http://127.0.0.1:3000',  // Använd IP-adress istället för localhost
   
   // Scopes som behövs för appen
