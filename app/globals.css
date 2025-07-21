@@ -1,0 +1,78 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --spotify-green: #1DB954;
+  --spotify-black: #121212;
+  --spotify-dark: #282828;
+  --spotify-light: #B3B3B3;
+}
+
+body {
+  background-color: var(--spotify-black);
+  color: white;
+}
+
+/* Custom slider styles */
+.slider {
+  -webkit-appearance: none;
+  appearance: none;
+  background: transparent;
+  cursor: pointer;
+  outline: none;
+}
+
+.slider::-webkit-slider-track {
+  background: #4B5563;
+  height: 6px;
+  border-radius: 3px;
+  border: none;
+}
+
+.slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  background: var(--spotify-green);
+  height: 18px;
+  width: 18px;
+  border-radius: 50%;
+  cursor: pointer;
+  border: 2px solid #1DB954;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+  transition: all 0.2s ease;
+}
+
+.slider::-webkit-slider-thumb:hover {
+  background: #1ed760;
+  transform: scale(1.1);
+}
+
+.slider::-moz-range-track {
+  background: #4B5563;
+  height: 6px;
+  border-radius: 3px;
+  border: none;
+}
+
+.slider::-moz-range-thumb {
+  background: var(--spotify-green);
+  height: 18px;
+  width: 18px;
+  border-radius: 50%;
+  cursor: pointer;
+  border: 2px solid #1DB954;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+  transition: all 0.2s ease;
+}
+
+.slider::-moz-range-thumb:hover {
+  background: #1ed760;
+  transform: scale(1.1);
+}
+
+@layer utilities {
+  .text-balance {
+    text-wrap: balance;
+  }
+} 
