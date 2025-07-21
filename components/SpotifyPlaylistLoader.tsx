@@ -21,9 +21,10 @@ interface SpotifyPlaylistLoaderProps {
   accessToken: string | null
   onAddToPlaylist: (track: Track) => void
   onPlayTrack: (track: Track, startTime?: number) => void
+  onAddAllToQueue: (tracks: Track[]) => void // Ny prop
 }
 
-export default function SpotifyPlaylistLoader({ accessToken, onAddToPlaylist, onPlayTrack }: SpotifyPlaylistLoaderProps) {
+export default function SpotifyPlaylistLoader({ accessToken, onAddToPlaylist, onPlayTrack, onAddAllToQueue }: SpotifyPlaylistLoaderProps) {
   const [playlists, setPlaylists] = useState<SpotifyPlaylist[]>([])
   const [expandedPlaylists, setExpandedPlaylists] = useState<ExpandedPlaylist[]>([])
   const [isLoading, setIsLoading] = useState(false)
@@ -146,10 +147,10 @@ export default function SpotifyPlaylistLoader({ accessToken, onAddToPlaylist, on
             {playlists.map((playlist) => {
               const isExpanded = expandedPlaylists.some(p => p.id === playlist.id && p.isExpanded)
               const isLoading = expandedPlaylists.some(p => p.id === playlist.id && p.isLoading)
-              
+              const expanded = expandedPlaylists.find(p => p.id === playlist.id)
               return (
                 <div key={playlist.id} className="bg-spotify-black p-3 rounded border border-gray-700">
-                  <div className="flex items-center justify-between">
+                  <div className="flex items-center justify-between gap-2">
                     <div className="flex-1">
                       <p className="text-white font-medium">{playlist.name}</p>
                       <p className="text-sm text-gray-400">{playlist.tracks.total} låtar</p>
@@ -160,6 +161,39 @@ export default function SpotifyPlaylistLoader({ accessToken, onAddToPlaylist, on
                       className="px-3 py-1 bg-spotify-green text-black text-sm rounded hover:bg-green-400 disabled:opacity-50 disabled:cursor-not-allowed"
                     >
                       {isLoading ? 'Laddar...' : isExpanded ? 'Dölj' : 'Visa'}
+                    </button>
+                    <button
+                      onClick={async () => {
+                        if (expanded && expanded.tracks.length > 0) {
+                          onAddAllToQueue(expanded.tracks)
+                        } else {
+                          // Ladda spellistans tracks först
+                          const response = await fetch(`https://api.spotify.com/v1/playlists/${playlist.id}/tracks`, {
+                            headers: {
+                              'Authorization': `Bearer ${accessToken}`
+                            }
+                          })
+                          if (response.ok) {
+                            const data = await response.json()
+                            const tracks: Track[] = data.items
+                              .filter((item: any) => item.track && item.track.id)
+                              .map((item: any) => ({
+                                id: item.track.id,
+                                name: item.track.name,
+                                artists: item.track.artists,
+                                album: item.track.album,
+                                duration_ms: item.track.duration_ms,
+                                uri: item.track.uri,
+                                startTime: undefined
+                              }))
+                            onAddAllToQueue(tracks)
+                          }
+                        }
+                      }}
+                      disabled={isLoading}
+                      className="px-3 py-1 bg-spotify-green text-white text-sm rounded hover:bg-green-600 disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      Lägg till alla i kö
                     </button>
                   </div>
                 </div>

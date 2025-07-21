@@ -461,7 +461,14 @@ export default function Home() {
     setIsShuffled(!isShuffled)
   }
 
-
+  // Lägg till alla låtar i kön
+  const handleAddAllToQueue = (tracks: Track[]) => {
+    setPlaylist(prev => {
+      // Ladda sparade starttider för alla tracks
+      const tracksWithStartTimes = loadSavedStartTimes(tracks)
+      return [...prev, ...tracksWithStartTimes]
+    })
+  }
 
   const handleAuthSuccess = async (token: string) => {
     setAccessToken(token)
@@ -550,79 +557,21 @@ export default function Home() {
                 </>
               )}
             </div>
-
-            {/* Visa spellista */}
-            <PlaylistViewer
-              playlist={playlist}
-              onRemoveTrack={handleRemoveFromPlaylist}
-              onPlayTrack={handlePlayTrack}
+            {/* Ta bort PlaylistViewer här */}
+            <SpotifyPlaylistLoader
               accessToken={accessToken}
-              userId={userId || ''}
+              onAddToPlaylist={handleAddToPlaylist}
+              onPlayTrack={handlePlayTrack}
+              onAddAllToQueue={handleAddAllToQueue}
             />
-
-            {/* Kö-hantering */}
-            <div className="mb-8">
-              <h2 className="text-2xl font-bold text-white mb-4">Spara och ladda köer</h2>
-              <div className="bg-spotify-dark rounded-lg p-6 space-y-6">
-                <QueueSaver
-                  playlist={playlist}
-                  accessToken={accessToken}
-                  userId={userId}
-                  onLoadQueue={(tracks, name) => {
-                    // Ladda sparade starttider för alla låtar i kön
-                    const tracksWithStartTimes = loadSavedStartTimes(tracks)
-                    setPlaylist(tracksWithStartTimes)
-                    setPlaylistName(name)
-                    console.log('Loaded queue:', { name, trackCount: tracks.length, tracksWithStartTimes: tracksWithStartTimes.map(t => ({ name: t.name, startTime: t.startTime })) })
-                  }}
-                />
-                
-                <div className="border-t border-gray-700 pt-6">
-                  <SpotifyPlaylistLoader
-                    accessToken={accessToken}
-                    onAddToPlaylist={handleAddToPlaylist}
-                    onPlayTrack={handlePlayTrack}
-                  />
-                </div>
-              </div>
-            </div>
+            {/* Resten av vänsterpanelen ... */}
 
 
           </div>
 
           {/* Höger panel - Kö och nuvarande låt */}
           <div className="w-1/2 bg-spotify-black p-6">
-            {/* Enhetsval och status */}
-            <div className="mb-6">
-              <h2 className="text-lg font-semibold text-white mb-2">Spotify-enheter</h2>
-              {devices.length === 0 ? (
-                <div className="text-spotify-light text-sm">Inga enheter hittades. Se till att du har minst en Spotify-app igång.</div>
-              ) : (
-                <ul className="mb-2">
-                  {devices.map(device => (
-                    <li key={device.id} className={`flex items-center space-x-2 text-sm ${device.is_active ? 'text-spotify-green font-bold' : 'text-white'}`}>
-                      <span>{device.name}</span>
-                      <span className="text-xs text-gray-400">({device.type})</span>
-                      {device.is_active && <span className="ml-2 px-2 py-0.5 bg-green-700 text-white rounded text-xs">Aktiv</span>}
-                      {device.id === activeDeviceId && !device.is_active && <span className="ml-2 px-2 py-0.5 bg-yellow-600 text-white rounded text-xs">Vald (ej aktiv)</span>}
-                    </li>
-                  ))}
-                </ul>
-              )}
-              {/* Varning om webbläsarspelaren inte är aktiv */}
-              {devices.length > 0 && devices.every(d => !d.is_active || d.id !== activeDeviceId) && (
-                <div className="bg-yellow-700 text-white text-xs rounded px-3 py-2 mt-2">
-                  Webbläsarspelaren är inte aktiv. Välj "Spotify Playlist Creator" som enhet i Spotify-appen för att spela härifrån.
-                </div>
-              )}
-              <button
-                onClick={fetchDevices}
-                className="mt-2 px-3 py-1 bg-gray-700 text-white text-xs rounded hover:bg-gray-600"
-              >
-                Uppdatera enhetslista
-              </button>
-            </div>
-            {/* Resten av högerpanelen */}
+            {/* Ta bort enhetsval och status här */}
             <QueueManager
               playlist={playlist}
               onRemoveTrack={handleRemoveFromPlaylist}

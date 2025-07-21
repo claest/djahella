@@ -10,9 +10,10 @@ interface PlaylistViewerProps {
   onPlayTrack: (track: Track, startTimeMs?: number) => void
   accessToken?: string | null
   userId: string // Ny prop
+  onAddAllToQueue: (tracks: Track[]) => void // Ny prop
 }
 
-export default function PlaylistViewer({ playlist, onRemoveTrack, onPlayTrack, accessToken, userId }: PlaylistViewerProps) {
+export default function PlaylistViewer({ playlist, onRemoveTrack, onPlayTrack, accessToken, userId, onAddAllToQueue }: PlaylistViewerProps) {
   const [editingTrack, setEditingTrack] = useState<string | null>(null)
   const [startTimes, setStartTimes] = useState<{ [key: string]: number }>({})
   const [useStartTimes, setUseStartTimes] = useState<{ [key: string]: boolean }>({})
@@ -135,6 +136,16 @@ export default function PlaylistViewer({ playlist, onRemoveTrack, onPlayTrack, a
       <h2 className="text-xl font-semibold text-white mb-4">
         Spellista ({playlist.length} låtar)
       </h2>
+      {playlist.length > 0 && (
+        <div className="flex justify-end mb-2 gap-2">
+          <button
+            onClick={() => onAddAllToQueue(playlist)}
+            className="px-3 py-1 bg-spotify-green text-white text-sm rounded hover:bg-green-600"
+          >
+            Lägg till alla i kö
+          </button>
+        </div>
+      )}
       
       {playlist.length === 0 ? (
         <p className="text-spotify-light text-center py-8">
