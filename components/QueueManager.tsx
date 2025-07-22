@@ -451,12 +451,12 @@ export default function QueueManager({
             {playlist.map((track, index) => (
               <div
                 key={`${track.id}-${index}`}
-                draggable
-                onDragStart={(e) => handleDragStart(e, index)}
-                onDragOver={(e) => handleDragOver(e, index)}
-                onDragLeave={handleDragLeave}
-                onDrop={(e) => handleDrop(e, index)}
-                onDragEnd={handleDragEnd}
+                draggable={editingTrack !== track.id}
+                onDragStart={editingTrack !== track.id ? (e) => handleDragStart(e, index) : undefined}
+                onDragOver={editingTrack !== track.id ? (e) => handleDragOver(e, index) : undefined}
+                onDragLeave={editingTrack !== track.id ? handleDragLeave : undefined}
+                onDrop={editingTrack !== track.id ? (e) => handleDrop(e, index) : undefined}
+                onDragEnd={editingTrack !== track.id ? handleDragEnd : undefined}
                 className={`p-3 rounded-lg border transition-all cursor-move ${
                   index === currentTrackIndex
                     ? 'bg-spotify-green/20 border-spotify-green'
@@ -465,7 +465,7 @@ export default function QueueManager({
                     : dragOverIndex === index
                     ? 'bg-blue-600/20 border-blue-500'
                     : 'bg-spotify-black border-gray-700 hover:border-gray-600'
-                }`}
+                } ${editingTrack === track.id ? 'cursor-default' : ''}`}
               >
                 <div className="flex items-center space-x-3">
                   <div className="text-gray-400 text-lg cursor-move">⋮⋮</div>
