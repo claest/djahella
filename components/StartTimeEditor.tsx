@@ -44,24 +44,9 @@ export default function StartTimeEditor({
             console.log('Loading start time from server for track:', { trackId, existingTime })
             setStartTimeMs(existingTime)
             setStartTimeText(existingTime.toString())
-            return
           }
         } catch (error) {
           console.error('Fel vid laddning av starttid från server:', error)
-        }
-        
-        // Fallback till localStorage
-        try {
-          const saved = localStorage.getItem(`trackStartTimes_${userId}`)
-          if (saved) {
-            const times = JSON.parse(saved)
-            const existingTime = times[trackId] || 0
-            console.log('Loading start time from localStorage for track:', { trackId, existingTime })
-            setStartTimeMs(existingTime)
-            setStartTimeText(existingTime.toString())
-          }
-        } catch (error) {
-          console.error('Fel vid laddning av starttid från localStorage:', error)
         }
       }
       loadStartTime()
@@ -77,10 +62,36 @@ export default function StartTimeEditor({
     }
   }, [])
 
-  const handleSave = () => {
+  const handleSave = async () => {
     const timeMs = parseInt(startTimeText)
     if (!isNaN(timeMs) && timeMs >= 0 && timeMs <= duration) {
       console.log('Saving start time:', { trackId, timeMs })
+      if (userId) {
+        // Hämta aktuell kö och useStartTimes/startPoints från servern
+        try {
+          const resGet = await fetch(`/api/queues?userId=${encodeURIComponent(userId)}`)
+          let queues = []
+          let useStartTimes = {}
+          let startPoints = {}
+          if (resGet.ok) {
+            const data = await resGet.json()
+            queues = data.queues || []
+            useStartTimes = { ...(data.useStartTimes || {}), [trackId]: true } // Sätt alltid true när man sparar starttid
+            startPoints = { ...(data.startPoints || {}), [trackId]: timeMs }
+          } else {
+            startPoints = { [trackId]: timeMs }
+            useStartTimes = { [trackId]: true }
+          }
+          await fetch('/api/queues', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ userId, queues, startPoints, useStartTimes })
+          })
+          console.log('Starttid och useStartTimes sparad separat till databasen:', { trackId, timeMs })
+        } catch (error) {
+          console.error('Fel vid separat sparande av starttid till databasen:', error)
+        }
+      }
       onSave(trackId, timeMs)
     } else {
       alert('Ange ett giltigt värde mellan 0 och ' + duration + ' millisekunder')

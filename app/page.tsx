@@ -14,15 +14,19 @@ import PlaylistViewer from '@/components/PlaylistViewer'
 // --- Server-synk och migrering ---
 async function fetchServerQueuesAndStartPoints(userId: string) {
   const res = await fetch(`/api/queues?userId=${encodeURIComponent(userId)}`)
-  if (!res.ok) return { queues: [], startPoints: {} }
+  if (!res.ok) return { queues: [], startPoints: {}, useStartTimes: {} }
   return await res.json()
 }
 
-async function saveServerQueuesAndStartPoints(userId: string, queues: any[], startPoints: any) {
+async function saveServerQueuesAndStartPoints(userId: string, queues: any[]) {
+  // Hämta aktuella startPoints och useStartTimes från servern
+  const serverData = await fetchServerQueuesAndStartPoints(userId)
+  const startPoints = serverData.startPoints || {}
+  const useStartTimes = serverData.useStartTimes || {}
   await fetch('/api/queues', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ userId, queues, startPoints })
+    body: JSON.stringify({ userId, queues, startPoints, useStartTimes })
   })
 }
 
@@ -39,6 +43,7 @@ export default function Home() {
   const [useStartTimes, setUseStartTimes] = useState<{ [key: string]: boolean }>({})
   const [showQueues, setShowQueues] = useState(true)
   const [showSpotifyLists, setShowSpotifyLists] = useState(true)
+  const [startPoints, setStartPoints] = useState<{ [key: string]: number }>({})
 
   // Spotify Player hook
   const {
@@ -140,6 +145,31 @@ export default function Home() {
       const serverData = await fetchServerQueuesAndStartPoints(userId)
       const serverStartPoints = serverData.startPoints || {}
       const serverUseStartTimes = serverData.useStartTimes || {}
+      setStartPoints(serverStartPoints) // Spara i state
+
+      // Sätt default useStartTimes till true för alla låtar med starttid om det saknas
+      const newUseStartTimes = { ...serverUseStartTimes }
+      let hasChanges = false
+      tracks.forEach(track => {
+        if (serverStartPoints[track.id] && !(track.id in newUseStartTimes)) {
+          newUseStartTimes[track.id] = true
+          hasChanges = true
+        }
+      })
+      if (hasChanges) {
+        setUseStartTimes(newUseStartTimes)
+        // Spara till servern direkt
+        await fetch('/api/queues', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            userId,
+            queues: serverData.queues || [],
+            startPoints: serverStartPoints,
+            useStartTimes: newUseStartTimes
+          })
+        })
+      }
       
       console.log('Loaded start points from server:', serverStartPoints)
       console.log('Loaded use start times from server:', serverUseStartTimes)
@@ -206,54 +236,83 @@ export default function Home() {
     return tracks
   }
 
-  // Ladda sparad kö från localStorage när komponenten mountas
+  // Ladda sparad kö från databasen när komponenten mountas
   useEffect(() => {
     if (userId) {
       const loadQueue = async () => {
         try {
-          const savedQueue = localStorage.getItem(`spotify_queue_${userId}`)
-          if (savedQueue) {
-            const parsedQueue = JSON.parse(savedQueue)
-            console.log('Loading saved queue for user:', userId, parsedQueue.length, 'tracks')
+          // Försök hämta från databasen först
+          const serverData = await fetchServerQueuesAndStartPoints(userId)
+          if (serverData.queues && serverData.queues.length > 0) {
+            // Ta den senaste kön
+            const latestQueue = serverData.queues[serverData.queues.length - 1]
+            console.log('Loading queue from database for user:', userId, latestQueue.tracks.length, 'tracks')
             
             // Ladda starttider för låtar i kön
-            const tracksWithStartTimes = await loadSavedStartTimes(parsedQueue)
+            const tracksWithStartTimes = await loadSavedStartTimes(latestQueue.tracks)
             setPlaylist(tracksWithStartTimes)
-            console.log('Queue loaded with start times:', tracksWithStartTimes.map(t => ({ name: t.name, startTime: t.startTime })))
+            setPlaylistName(latestQueue.name)
+            console.log('Queue loaded from database with start times:', tracksWithStartTimes.map(t => ({ name: t.name, startTime: t.startTime })))
+          } else {
+            // Fallback till localStorage om databasen är tom
+            const savedQueue = localStorage.getItem(`spotify_queue_${userId}`)
+            if (savedQueue) {
+              const parsedQueue = JSON.parse(savedQueue)
+              console.log('Loading saved queue from localStorage for user:', userId, parsedQueue.length, 'tracks')
+              
+              // Ladda starttider för låtar i kön
+              const tracksWithStartTimes = await loadSavedStartTimes(parsedQueue)
+              setPlaylist(tracksWithStartTimes)
+              console.log('Queue loaded from localStorage with start times:', tracksWithStartTimes.map(t => ({ name: t.name, startTime: t.startTime })))
+            }
           }
         } catch (error) {
           console.error('Fel vid laddning av sparad kö:', error)
+          
+          // Fallback till localStorage vid fel
+          try {
+            const savedQueue = localStorage.getItem(`spotify_queue_${userId}`)
+            if (savedQueue) {
+              const parsedQueue = JSON.parse(savedQueue)
+              console.log('Fallback: Loading saved queue from localStorage for user:', userId, parsedQueue.length, 'tracks')
+              
+              // Ladda starttider för låtar i kön
+              const tracksWithStartTimes = await loadSavedStartTimes(parsedQueue)
+              setPlaylist(tracksWithStartTimes)
+              console.log('Fallback: Queue loaded from localStorage with start times:', tracksWithStartTimes.map(t => ({ name: t.name, startTime: t.startTime })))
+            }
+          } catch (localError) {
+            console.error('Fel vid fallback till localStorage:', localError)
+          }
         }
       }
       loadQueue()
     }
   }, [userId])
 
-  // Spara kö till localStorage när playlist ändras
+  // Spara kö till databasen när playlist ändras (ersätter localStorage-sparning)
   useEffect(() => {
     if (userId && playlist.length > 0) {
-      try {
-        localStorage.setItem(`spotify_queue_${userId}`, JSON.stringify(playlist))
-        console.log('Saved queue for user:', userId, playlist.length, 'tracks')
-      } catch (error) {
-        console.error('Fel vid sparande av kö:', error)
-      }
-    } else if (userId && playlist.length === 0) {
-      // Ta bort sparad kö om den är tom OCH användaren aktivt rensat den
-      // (inte bara temporärt null under inloggning)
-      const isLoggingIn = !accessToken // Om accessToken är null, är vi i inloggningsprocessen
-      if (!isLoggingIn) {
+      // Använd setTimeout för att undvika för många API-anrop
+      const timeoutId = setTimeout(async () => {
         try {
-          localStorage.removeItem(`spotify_queue_${userId}`)
-          console.log('Removed empty queue for user:', userId)
+          await saveServerQueuesAndStartPoints(userId, [{
+            id: `current_queue_${Date.now()}`,
+            userId,
+            name: playlistName || 'Aktiv kö',
+            tracks: playlist,
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString()
+          }])
+          console.log('Playlist auto-saved to database:', playlist.length, 'tracks')
         } catch (error) {
-          console.error('Fel vid borttagning av sparad kö:', error)
+          console.error('Fel vid auto-sparande av kö till databasen:', error)
         }
-      } else {
-        console.log('Skipping queue removal during login process')
-      }
+      }, 1000) // Vänta 1 sekund innan sparande
+      
+      return () => clearTimeout(timeoutId)
     }
-  }, [playlist, userId, accessToken])
+  }, [playlist, userId, playlistName])
 
   // Hämta användar-ID från Spotify
   const fetchUserId = async (token: string) => {
@@ -362,6 +421,26 @@ export default function Home() {
     setPlaylist(prev => {
       const newPlaylist = [...prev, trackWithStartTime]
       console.log('Added track to playlist:', track.name, 'with startTime:', trackWithStartTime.startTime)
+      
+      // Spara till databasen
+      if (userId && newPlaylist.length > 0) {
+        setTimeout(async () => {
+          try {
+            await saveServerQueuesAndStartPoints(userId, [{
+              id: `current_queue_${Date.now()}`,
+              userId,
+              name: playlistName || 'Aktiv kö',
+              tracks: newPlaylist,
+              createdAt: new Date().toISOString(),
+              updatedAt: new Date().toISOString()
+            }])
+            console.log('Updated playlist saved to database after adding track')
+          } catch (error) {
+            console.error('Fel vid sparande av uppdaterad spellista till databasen:', error)
+          }
+        }, 100)
+      }
+      
       return newPlaylist
     })
   }
@@ -372,7 +451,30 @@ export default function Home() {
   }
 
   const handleRemoveFromPlaylist = (index: number) => {
-    setPlaylist(prev => prev.filter((_, i) => i !== index))
+    setPlaylist(prev => {
+      const newPlaylist = prev.filter((_, i) => i !== index)
+      
+      // Spara till databasen
+      if (userId && newPlaylist.length > 0) {
+        setTimeout(async () => {
+          try {
+            await saveServerQueuesAndStartPoints(userId, [{
+              id: `current_queue_${Date.now()}`,
+              userId,
+              name: playlistName || 'Aktiv kö',
+              tracks: newPlaylist,
+              createdAt: new Date().toISOString(),
+              updatedAt: new Date().toISOString()
+            }])
+            console.log('Updated playlist saved to database after removing track')
+          } catch (error) {
+            console.error('Fel vid sparande av uppdaterad spellista till databasen:', error)
+          }
+        }, 100)
+      }
+      
+      return newPlaylist
+    })
   }
 
   const handlePlayTrack = async (track: Track, startTime?: number) => {
@@ -526,7 +628,28 @@ export default function Home() {
     // Ladda sparade starttider för alla tracks
     const tracksWithStartTimes = await loadSavedStartTimes(tracks)
     setPlaylist(prev => {
-      return [...prev, ...tracksWithStartTimes]
+      const newPlaylist = [...prev, ...tracksWithStartTimes]
+      
+      // Spara till databasen
+      if (userId && newPlaylist.length > 0) {
+        setTimeout(async () => {
+          try {
+            await saveServerQueuesAndStartPoints(userId, [{
+              id: `current_queue_${Date.now()}`,
+              userId,
+              name: playlistName || 'Aktiv kö',
+              tracks: newPlaylist,
+              createdAt: new Date().toISOString(),
+              updatedAt: new Date().toISOString()
+            }])
+            console.log('Updated playlist saved to database after adding all tracks')
+          } catch (error) {
+            console.error('Fel vid sparande av uppdaterad spellista till databasen:', error)
+          }
+        }, 100)
+      }
+      
+      return newPlaylist
     })
   }
 
@@ -548,7 +671,7 @@ export default function Home() {
     console.log('Logged out, cleared access token but kept playlist data')
   }
 
-  const handleReorderTracks = (newPlaylist: Track[]) => {
+  const handleReorderTracks = async (newPlaylist: Track[]) => {
     console.log('handleReorderTracks called:', {
       oldLength: playlist.length,
       newLength: newPlaylist.length,
@@ -566,6 +689,23 @@ export default function Home() {
         setCurrentTrackIndex(newIndex)
       }
     }
+    
+    // Spara till databasen
+    if (userId && newPlaylist.length > 0) {
+      try {
+        await saveServerQueuesAndStartPoints(userId, [{
+          id: `current_queue_${Date.now()}`,
+          userId,
+          name: playlistName || 'Aktiv kö',
+          tracks: newPlaylist,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString()
+        }])
+        console.log('Reordered playlist saved to database')
+      } catch (error) {
+        console.error('Fel vid sparande av omordnad spellista till databasen:', error)
+      }
+    }
   }
 
   const handleClearQueue = () => {
@@ -573,101 +713,29 @@ export default function Home() {
     setCurrentTrackIndex(-1)
     // Behåll useStartTimes och starttider - de kan användas för framtida låtar
     console.log('Kö rensad, starttid-inställningar behållna')
+    
+    // Spara tom kö till databasen
+    if (userId) {
+      setTimeout(async () => {
+        try {
+          await saveServerQueuesAndStartPoints(userId, [{
+            id: `current_queue_${Date.now()}`,
+            userId,
+            name: 'Tom kö',
+            tracks: [],
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString()
+          }])
+          console.log('Empty queue saved to database')
+        } catch (error) {
+          console.error('Fel vid sparande av tom kö till databasen:', error)
+        }
+      }, 100)
+    }
   }
 
   // --- Migrering och synk vid inloggning ---
-  useEffect(() => {
-    if (!userId) return
-    (async () => {
-      // 1. Hämta från servern
-      const serverData = await fetch(`/api/queues?userId=${encodeURIComponent(userId)}`)
-        .then(res => res.json())
-      let localQueues = []
-      let localStartPoints = {}
-      let localUseStartTimes = {}
-      try {
-        localQueues = JSON.parse(localStorage.getItem(`spotify_queues_${userId}`) || '[]')
-      } catch {}
-      try {
-        localStartPoints = JSON.parse(localStorage.getItem(`trackStartTimes_${userId}`) || '{}')
-      } catch {}
-      try {
-        localUseStartTimes = JSON.parse(localStorage.getItem(`useStartTimes_${userId}`) || '{}')
-      } catch {}
-      console.log('DEBUG: localQueues', localQueues)
-      console.log('DEBUG: localStartPoints', localStartPoints)
-      console.log('DEBUG: localUseStartTimes', localUseStartTimes)
-      console.log('DEBUG: serverData', serverData)
-      // NYTT: Om localQueues är tom, kolla även efter spotify_queue_${userId} (en array av tracks)
-      if ((!localQueues || localQueues.length === 0) && localStorage.getItem(`spotify_queue_${userId}`)) {
-        try {
-          const singleQueue = JSON.parse(localStorage.getItem(`spotify_queue_${userId}`) || '[]')
-          if (Array.isArray(singleQueue) && singleQueue.length > 0) {
-            localQueues = [{
-              id: `migrated_${Date.now()}`,
-              userId,
-              name: 'Migrerad kö',
-              tracks: singleQueue,
-              createdAt: new Date().toISOString(),
-              updatedAt: new Date().toISOString()
-            }]
-            console.log('Migrerar från spotify_queue_${userId} (array av tracks):', localQueues)
-          }
-        } catch (e) {
-          console.error('Fel vid migrering från spotify_queue:', e)
-        }
-      }
-      // 2. Om servern saknar data men localStorage har, migrera
-      let queuesToMigrate = localQueues
-      if (Array.isArray(localQueues) && localQueues.length > 0 && !localQueues[0].tracks) {
-        queuesToMigrate = [{
-          id: `migrated_${Date.now()}`,
-          userId,
-          name: 'Migrerad kö',
-          tracks: localQueues,
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString()
-        }]
-        console.log('Migrerar tracks-array som kö-objekt:', queuesToMigrate)
-      } else {
-        console.log('Migrerar kö-objekt:', queuesToMigrate)
-      }
-      const needsMigration = (serverData.queues?.length === 0 && queuesToMigrate.length > 0) ||
-                            (Object.keys(serverData.startPoints || {}).length === 0 && Object.keys(localStartPoints).length > 0) ||
-                            (Object.keys(serverData.useStartTimes || {}).length === 0 && Object.keys(localUseStartTimes).length > 0)
-      console.log('DEBUG: needsMigration', needsMigration)
-      if (needsMigration) {
-        const resp = await fetch('/api/queues', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ userId, queues: queuesToMigrate, startPoints: localStartPoints, useStartTimes: localUseStartTimes })
-        })
-        const respJson = await resp.json()
-        console.log('Svar från migrerings-POST:', resp.status, respJson)
-        // Rensa localStorage
-        localStorage.removeItem(`spotify_queues_${userId}`)
-        localStorage.removeItem(`trackStartTimes_${userId}`)
-        localStorage.removeItem(`useStartTimes_${userId}`)
-        alert('Dina köer, startpunkter och starttidsval har nu flyttats till servern och är tillgängliga på alla enheter!')
-        // Hämta igen från servern efter migrering
-        const newServerData = await fetch(`/api/queues?userId=${encodeURIComponent(userId)}`).then(res => res.json())
-        if (newServerData.queues && newServerData.queues.length > 0) {
-          setPlaylist(newServerData.queues[0].tracks || [])
-        }
-        if (newServerData.startPoints) {
-          setUseStartTimes(newServerData.useStartTimes || {})
-        }
-      } else {
-        // Ingen migrering, ladda från servern
-        if (serverData.queues && serverData.queues.length > 0) {
-          setPlaylist(serverData.queues[0].tracks || [])
-        }
-        if (serverData.useStartTimes) {
-          setUseStartTimes(serverData.useStartTimes)
-        }
-      }
-    })()
-  }, [userId])
+  // Ta bort hela denna useEffect som hanterar migrering och alert
 
   // Spara useStartTimes till servern och localStorage vid ändring
   useEffect(() => {
@@ -678,6 +746,7 @@ export default function Home() {
       const serverData = await fetch(`/api/queues?userId=${encodeURIComponent(userId)}`).then(res => res.json())
       const queues = serverData.queues || []
       const startPoints = serverData.startPoints || {}
+      const useStartTimes = serverData.useStartTimes || {}
       // Skicka tillbaka hela objektet, men med uppdaterad useStartTimes
       await fetch('/api/queues', {
         method: 'POST',
@@ -804,6 +873,7 @@ export default function Home() {
               userId={userId}
               useStartTimes={useStartTimes}
               setUseStartTimes={setUseStartTimes}
+              startPoints={startPoints}
             />
           </div>
         </div>

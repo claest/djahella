@@ -91,20 +91,7 @@ export async function GET(request: NextRequest) {
       [userId]
     )
 
-    // Om ingen data finns i databasen, försök migrera från fil
-    if (Array.isArray(rows) && rows.length === 0) {
-      const migrated = await migrateFromFile(userId)
-      if (migrated) {
-        // Hämta data igen efter migrering
-        const [newRows] = await pool.execute(
-          'SELECT queues, start_points, use_start_times FROM user_data WHERE user_id = ?',
-          [userId]
-        ) as [any[], any]
-        if (Array.isArray(newRows) && newRows.length > 0) {
-          rows.push(...newRows)
-        }
-      }
-    }
+    // Ta bort migrering från fil/localStorage
 
     if (Array.isArray(rows) && rows.length > 0) {
       const row = rows[0] as any

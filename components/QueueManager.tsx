@@ -27,6 +27,7 @@ interface QueueManagerProps {
   userId?: string | null
   useStartTimes?: { [key: string]: boolean }
   setUseStartTimes?: React.Dispatch<React.SetStateAction<{ [key: string]: boolean }>>
+  startPoints?: { [key: string]: number }
 }
 
 export default function QueueManager({
@@ -51,11 +52,11 @@ export default function QueueManager({
   accessToken,
   userId,
   useStartTimes: externalUseStartTimes,
-  setUseStartTimes: externalSetUseStartTimes
+  setUseStartTimes: externalSetUseStartTimes,
+  startPoints = {}
 }: QueueManagerProps) {
 
   const [editingTrack, setEditingTrack] = useState<string | null>(null)
-  const [startTimes, setStartTimes] = useState<{ [key: string]: number }>({})
   const [internalUseStartTimes, setInternalUseStartTimes] = useState<{ [key: string]: boolean }>({})
   const [fadeProgress, setFadeProgress] = useState(0)
   
@@ -72,67 +73,42 @@ export default function QueueManager({
     trackNames: playlist.map(t => t.name)
   })
 
-  // Ladda sparade starttider från localStorage
-  useEffect(() => {
-    if (userId) {
-      try {
-        const saved = localStorage.getItem(`trackStartTimes_${userId}`)
-        if (saved) {
-          const times = JSON.parse(saved)
-          setStartTimes(times)
-          console.log('Loaded start times for user:', userId, times)
-          
-          // Ladda också useStartTimes-inställningar (endast om de inte kommer från externt)
-          if (!externalUseStartTimes) {
-            const savedUseStartTimes = localStorage.getItem(`useStartTimes_${userId}`)
-            if (savedUseStartTimes) {
-              const useStartTimesData = JSON.parse(savedUseStartTimes)
-              setInternalUseStartTimes(useStartTimesData)
-              console.log('Loaded use start times settings for user:', userId, useStartTimesData)
-            } else {
-              // Om inga sparade inställningar finns, sätt alla låtar med starttid till att använda den som standard
-              const defaultUseStartTimes: { [key: string]: boolean } = {}
-              Object.keys(times).forEach(trackId => {
-                defaultUseStartTimes[trackId] = true
-              })
-              setInternalUseStartTimes(defaultUseStartTimes)
-              console.log('Set default use start times for user:', userId, defaultUseStartTimes)
-            }
-          }
-        }
-      } catch (error) {
-        console.error('Fel vid laddning av starttider:', error)
-      }
-    }
-  }, [userId])
+  // Ta bort localStorage-hantering av startTimes
 
-  // Spara starttider till localStorage
+  // Spara starttider till servern
   const saveStartTimes = async (newStartTimes: { [key: string]: number }) => {
-    if (userId) {
-      try {
-        // Spara lokalt
-        localStorage.setItem(`trackStartTimes_${userId}`, JSON.stringify(newStartTimes))
-        console.log('Saved start times locally for user:', userId)
-        
-        // Spara till databasen
-        const res = await fetch('/api/queues', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ 
-            userId, 
-            startPoints: newStartTimes,
-            useStartTimes: useStartTimes
-          })
-        })
-        
-        if (res.ok) {
-          console.log('Saved start times to database for user:', userId)
-        } else {
-          console.error('Failed to save start times to database')
+    if (!userId) return;
+    try {
+      // Hämta aktuell kö från servern
+      const resGet = await fetch(`/api/queues?userId=${encodeURIComponent(userId)}`)
+      let queues = []
+      let useStartTimesToSend = useStartTimes
+      if (resGet.ok) {
+        const data = await resGet.json()
+        queues = data.queues || []
+        // Om useStartTimes är tomt, använd det från servern
+        if (!useStartTimesToSend || Object.keys(useStartTimesToSend).length === 0) {
+          useStartTimesToSend = data.useStartTimes || {}
         }
-      } catch (error) {
-        console.error('Fel vid sparande av starttider:', error)
       }
+      // Spara till databasen
+      const res = await fetch('/api/queues', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          userId, 
+          queues,
+          startPoints: newStartTimes,
+          useStartTimes: useStartTimesToSend
+        })
+      })
+      if (res.ok) {
+        console.log('Saved start times to database for user:', userId)
+      } else {
+        console.error('Failed to save start times to database')
+      }
+    } catch (error) {
+      console.error('Fel vid sparande av starttider:', error)
     }
   }
 
@@ -149,20 +125,47 @@ export default function QueueManager({
   }
 
   const handleStartTimeSave = async (trackId: string, startTimeMs: number) => {
-    const newStartTimes = { ...startTimes, [trackId]: startTimeMs }
-    setStartTimes(newStartTimes)
+    if (!userId) return;
+    const newStartTimes = { ...startPoints, [trackId]: startTimeMs }
+    // setStartTimes(newStartTimes) // Ta bort
     await saveStartTimes(newStartTimes)
     
     // Automatiskt sätta useStartTimes till true för denna låt
     setUseStartTimes(prev => {
       const newUseStartTimes = { ...prev, [trackId]: true }
-      if (userId) {
+      // Spara till databasen
+      const saveToDatabase = async () => {
         try {
-          localStorage.setItem(`useStartTimes_${userId}`, JSON.stringify(newUseStartTimes))
+          const resGet = await fetch(`/api/queues?userId=${encodeURIComponent(userId)}`)
+          let queues = []
+          let startPointsToSend = newStartTimes
+          if (resGet.ok) {
+            const data = await resGet.json()
+            queues = data.queues || []
+            if (!startPointsToSend || Object.keys(startPointsToSend).length === 0) {
+              startPointsToSend = data.startPoints || {}
+            }
+          }
+          const res = await fetch('/api/queues', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ 
+              userId, 
+              queues,
+              startPoints: startPointsToSend,
+              useStartTimes: newUseStartTimes
+            })
+          })
+          if (res.ok) {
+            console.log('Saved useStartTimes to database for user:', userId)
+          } else {
+            console.error('Failed to save useStartTimes to database')
+          }
         } catch (error) {
-          console.error('Fel vid sparande av useStartTimes:', error)
+          console.error('Fel vid sparande av useStartTimes till databasen:', error)
         }
       }
+      saveToDatabase()
       console.log('Auto-set useStartTimes to true for track:', trackId)
       return newUseStartTimes
     })
@@ -182,59 +185,49 @@ export default function QueueManager({
   }
 
   const toggleStartTimeUsage = async (trackId: string) => {
-    console.log('toggleStartTimeUsage called for track:', trackId, 'Current state:', useStartTimes[trackId])
-    
-    setUseStartTimes(prev => {
-      const newUseStartTimes = {
-        ...prev,
-        [trackId]: !prev[trackId]
+    if (!userId) return;
+    const newUseStartTimes = {
+      ...useStartTimes,
+      [trackId]: !useStartTimes[trackId]
+    };
+    setUseStartTimes(newUseStartTimes);
+
+    // Spara till databasen
+    try {
+      const resGet = await fetch(`/api/queues?userId=${encodeURIComponent(userId)}`);
+      let queues = [];
+      let startPointsToSend = startPoints;
+      if (resGet.ok) {
+        const data = await resGet.json();
+        queues = data.queues || [];
+        startPointsToSend = data.startPoints || startPoints;
       }
-      
-      // Spara till localStorage
-      if (userId) {
-        try {
-          localStorage.setItem(`useStartTimes_${userId}`, JSON.stringify(newUseStartTimes))
-        } catch (error) {
-          console.error('Fel vid sparande av useStartTimes:', error)
-        }
+      const res = await fetch('/api/queues', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          userId, 
+          queues,
+          startPoints: startPointsToSend,
+          useStartTimes: newUseStartTimes
+        })
+      });
+      if (res.ok) {
+        console.log('Saved useStartTimes to database for user:', userId);
+      } else {
+        console.error('Failed to save useStartTimes to database');
       }
-      
-      // Spara till databasen
-      const saveToDatabase = async () => {
-        try {
-          const res = await fetch('/api/queues', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ 
-              userId, 
-              startPoints: startTimes,
-              useStartTimes: newUseStartTimes
-            })
-          })
-          
-          if (res.ok) {
-            console.log('Saved useStartTimes to database for user:', userId)
-          } else {
-            console.error('Failed to save useStartTimes to database')
-          }
-        } catch (error) {
-          console.error('Fel vid sparande av useStartTimes till databasen:', error)
-        }
-      }
-      saveToDatabase()
-      
-      console.log('Toggled start time usage for track:', trackId, 'New state:', newUseStartTimes[trackId], 'All states:', newUseStartTimes)
-      
-      // Uppdatera spellistan i huvudkomponenten för att reflektera ändringen
-      const updatedPlaylist = playlist.map(track => ({
-        ...track,
-        // Behåll startTime men låt useStartTimes styra om den används
-      }))
-      onReorderTracks(updatedPlaylist)
-      
-      return newUseStartTimes
-    })
-  }
+    } catch (error) {
+      console.error('Fel vid sparande av useStartTimes till databasen:', error);
+    }
+
+    // Uppdatera spellistan i huvudkomponenten för att reflektera ändringen
+    const updatedPlaylist = playlist.map(track => ({
+      ...track,
+      // Behåll startTime men låt useStartTimes styra om den används
+    }));
+    onReorderTracks(updatedPlaylist);
+  };
 
   // Drag and drop handlers
   const handleDragStart = (e: React.DragEvent, index: number) => {
@@ -380,6 +373,10 @@ export default function QueueManager({
     }
   }, [])
 
+  // Vid rendering, använd startPoints-prop direkt:
+  const getTrackStartTime = (trackId: string) => startPoints[trackId] || 0;
+  const getTrackUseStartTime = (trackId: string) => useStartTimes[trackId] || false;
+
   return (
     <div className="h-full flex flex-col">
       {/* Kö */}
@@ -481,13 +478,13 @@ export default function QueueManager({
                         index === currentTrackIndex ? 'text-spotify-green' : 'text-white'
                       }`}
                       onClick={() => {
-                        const startTime = startTimes[track.id]
-                        const shouldUseStartTime = useStartTimes[track.id] && startTime
+                        const startTime = getTrackStartTime(track.id)
+                        const shouldUseStartTime = getTrackUseStartTime(track.id) && startTime
                         console.log('Playing track:', { 
                           trackName: track.name, 
                           startTime, 
                           shouldUseStartTime,
-                          useStartTime: useStartTimes[track.id]
+                          useStartTime: getTrackUseStartTime(track.id)
                         })
                         // Skicka startTime direkt i millisekunder (som handlePlayNext gör)
                         onPlayTrack(track, shouldUseStartTime ? startTime : undefined)
@@ -499,10 +496,10 @@ export default function QueueManager({
                     <p className="text-sm text-spotify-light truncate">
                       {track.artists?.[0]?.name || 'Okänd artist'}
                     </p>
-                    {startTimes[track.id] && (
+                    {startPoints[track.id] && (
                       <div className="flex items-center space-x-2">
                         <p className="text-xs text-spotify-green">
-                          Starttid: {Math.floor(startTimes[track.id] / 1000)}s ({startTimes[track.id]} ms)
+                          Starttid: {Math.floor(startPoints[track.id] / 1000)}s ({startPoints[track.id]} ms)
                         </p>
                         <button
                           onClick={(e) => {
@@ -524,14 +521,14 @@ export default function QueueManager({
                   <div className="flex items-center space-x-1">
                     <button
                       onClick={() => {
-                        const startTime = startTimes[track.id]
-                        const shouldUseStartTime = useStartTimes[track.id] && startTime
+                        const startTime = getTrackStartTime(track.id)
+                        const shouldUseStartTime = getTrackUseStartTime(track.id) && startTime
                         console.log('Playing track from button:', { 
                           trackName: track.name, 
                           trackId: track.id,
                           startTime, 
                           shouldUseStartTime,
-                          useStartTime: useStartTimes[track.id],
+                          useStartTime: getTrackUseStartTime(track.id),
                           allUseStartTimes: useStartTimes
                         })
                         // Skicka startTime direkt i millisekunder (som handlePlayNext gör)
