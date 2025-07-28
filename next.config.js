@@ -2,8 +2,7 @@
 const nextConfig = {
   // App directory är nu standard i Next.js 14
   experimental: {
-    // Aktivera bättre cache-hantering
-    optimizeCss: true,
+    // Ta bort optimizeCss för att undvika critters-fel
     optimizePackageImports: ['react', 'react-dom']
   },
   // Förbättra webpack-konfiguration
