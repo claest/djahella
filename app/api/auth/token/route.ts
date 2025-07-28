@@ -55,6 +55,22 @@ export async function POST(request: NextRequest) {
       // Returnera Spotify's felmeddelande direkt
       try {
         const errorData = JSON.parse(responseText)
+        
+        // Ge mer specifik feedback för vanliga fel
+        if (errorData.error === 'invalid_grant') {
+          if (errorData.error_description?.includes('expired')) {
+            return NextResponse.json({
+              error: 'authorization_code_expired',
+              error_description: 'Inloggningskoden har gått ut. Försök logga in igen.'
+            }, { status: 400 })
+          } else if (errorData.error_description?.includes('Invalid authorization code')) {
+            return NextResponse.json({
+              error: 'invalid_authorization_code',
+              error_description: 'Ogiltig inloggningskod. Försök logga in igen.'
+            }, { status: 400 })
+          }
+        }
+        
         return NextResponse.json(errorData, { status: 400 })
       } catch {
         return NextResponse.json(

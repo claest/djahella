@@ -29,7 +29,7 @@ export async function GET(request: NextRequest) {
     await getAccessToken()
     
     const response = await spotifyApi.searchTracks(query, {
-      limit: 20,
+      limit: 50, // Öka från 20 till 50 låtar
       offset: 0,
     })
 

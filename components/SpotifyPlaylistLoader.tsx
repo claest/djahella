@@ -41,7 +41,7 @@ export default function SpotifyPlaylistLoader({ accessToken, onAddToPlaylist, on
 
     setIsLoading(true)
     try {
-      const response = await fetch('https://api.spotify.com/v1/me/playlists?limit=50', {
+      const response = await fetch('https://api.spotify.com/v1/me/playlists?limit=50', { // Återställ till 50 - Spotify API max
         headers: {
           'Authorization': `Bearer ${accessToken}`
         }

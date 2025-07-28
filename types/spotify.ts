@@ -10,6 +10,7 @@ export interface Track {
   preview_url?: string // URL för 30-sekunders förhandsvisning
   uri?: string // Spotify URI för fullständig uppspelning
   startTime?: number // Anpassad starttid i millisekunder
+  fadeIn?: boolean // Aktivera 5-sekunders fade-in
 }
 
 export interface Artist {

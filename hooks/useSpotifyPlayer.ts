@@ -133,18 +133,24 @@ export const useSpotifyPlayer = (accessToken: string | null, onTrackEnd?: () => 
         console.error('=== Authentication Error ===')
         console.error('Message:', message)
         setError(`Autentiseringsfel: ${message}`)
+        // Visa användarvänligt felmeddelande
+        alert('Spotify-autentisering misslyckades. Logga in igen för att fortsätta.')
       })
 
       player.addListener('account_error', ({ message }) => {
         console.error('=== Account Error ===')
         console.error('Message:', message)
         setError(`Kontofel: ${message}`)
+        // Visa användarvänligt felmeddelande
+        alert('Spotify-kontofel. Kontrollera ditt Spotify-konto och försök igen.')
       })
 
       player.addListener('playback_error', ({ message }) => {
         console.error('=== Playback Error ===')
         console.error('Message:', message)
         setError(`Uppspelningsfel: ${message}`)
+        // Visa användarvänligt felmeddelande
+        alert('Uppspelningsfel. Kontrollera att Spotify-appen är öppen och försök igen.')
       })
 
       player.addListener('player_state_changed', (state: SpotifyPlaybackState | null) => {
@@ -188,11 +194,10 @@ export const useSpotifyPlayer = (accessToken: string | null, onTrackEnd?: () => 
         const connected = await player.connect()
         console.log('Player connect result:', connected)
         
-        // Fortsätt även om connect returnerar false
+        // Sätt spelaren men vänta på 'ready' event innan vi markerar som redo
         console.log('Player connected successfully, setting up...')
         setPlayer(player)
         playerRef.current = player
-        setIsReady(true)
         
         // Ladda nuvarande volym från Spotify
         try {
@@ -210,7 +215,7 @@ export const useSpotifyPlayer = (accessToken: string | null, onTrackEnd?: () => 
         console.log('Continuing despite connect error...')
         setPlayer(player)
         playerRef.current = player
-        setIsReady(true)
+        // Sätt inte isReady här - vänta på 'ready' event
       }
     } catch (error) {
       console.error('Fel vid initialisering av spelaren:', error)
@@ -270,7 +275,7 @@ export const useSpotifyPlayer = (accessToken: string | null, onTrackEnd?: () => 
   }, [accessToken, isReady, fetchDevices])
 
   // Spela en låt med Track-objekt
-  const playTrack = useCallback(async (track: any, startTimeMs?: number) => {
+  const playTrack = useCallback(async (track: any, startTimeMs?: number, fadeIn?: boolean) => {
     console.log('=== playTrack called ===')
     console.log('Player ref exists:', !!playerRef.current)
     console.log('Is connected:', isConnected)
@@ -278,23 +283,31 @@ export const useSpotifyPlayer = (accessToken: string | null, onTrackEnd?: () => 
     console.log('Access token exists:', !!accessTokenRef.current)
     console.log('Track:', track)
     console.log('Start time (ms):', startTimeMs)
+    console.log('Fade in:', fadeIn)
     
     if (!playerRef.current || !isConnected) {
-      const errorMsg = `Spelaren är inte ansluten. Player: ${!!playerRef.current}, Connected: ${isConnected}`
+      let errorMsg = 'Spotify-spelaren är inte redo än. '
+      if (!playerRef.current) {
+        errorMsg += 'Spelaren har inte initialiserats. '
+      }
+      if (!isConnected) {
+        errorMsg += 'Spelaren är inte ansluten till Spotify. '
+      }
+      errorMsg += 'Vänta lite och försök igen.'
       console.error(errorMsg)
       setError(errorMsg)
-      return
+      throw new Error(errorMsg)
     }
 
     if (!deviceId) {
       const errorMsg = 'Inget device ID tillgängligt'
       console.error(errorMsg)
       setError(errorMsg)
-      return
+      throw new Error(errorMsg)
     }
 
     try {
-      console.log('Playing track:', track.name, 'at position:', startTimeMs)
+      console.log('Playing track:', track.name, 'at position:', startTimeMs, 'with fade-in:', fadeIn)
       
       const trackUri = track.uri || track
       const requestBody: any = {
@@ -323,21 +336,58 @@ export const useSpotifyPlayer = (accessToken: string | null, onTrackEnd?: () => 
       if (!response.ok) {
         const errorText = await response.text()
         console.error('Error response:', errorText)
-        throw new Error(`Kunde inte spela låten: ${response.status} ${errorText}`)
+        const errorMsg = `Kunde inte spela låten: ${response.status} ${errorText}`
+        setError(errorMsg)
+        throw new Error(errorMsg)
       }
       
       console.log('Track play successful')
+      
+      // Implementera fade-in om det är aktiverat
+      if (fadeIn && playerRef.current) {
+        console.log('Starting fade-in effect')
+        
+        // Hämta användarens aktuella volym först
+        const currentVolume = volume / 100 // Konvertera från 0-100 till 0-1
+        console.log('Current user volume:', currentVolume)
+        
+        // Sätt volym till 0 först
+        await playerRef.current.setVolume(0)
+        
+        // Fade in över 5 sekunder till användarens volym
+        const fadeDuration = 5000 // 5 sekunder
+        const fadeSteps = 50 // 50 steg för smidig fade
+        const volumeStep = currentVolume / fadeSteps
+        const stepDuration = fadeDuration / fadeSteps
+        
+        for (let i = 0; i <= fadeSteps; i++) {
+          setTimeout(async () => {
+            try {
+              if (playerRef.current) {
+                const targetVolume = i * volumeStep
+                await playerRef.current.setVolume(targetVolume)
+                console.log(`Fade-in step ${i}/${fadeSteps}, volume: ${targetVolume} (target: ${currentVolume})`)
+              }
+            } catch (error) {
+              console.error('Fel vid fade-in steg:', error)
+            }
+          }, i * stepDuration)
+        }
+      }
     } catch (error) {
       console.error('Fel vid uppspelning:', error)
-      setError(`Kunde inte spela låten: ${error instanceof Error ? error.message : 'Okänt fel'}`)
+      const errorMsg = `Kunde inte spela låten: ${error instanceof Error ? error.message : 'Okänt fel'}`
+      setError(errorMsg)
+      throw error // Kasta fel vidare så att anropande kod kan hantera det
     }
   }, [isConnected, deviceId])
 
   // Spela en spellista
   const playPlaylist = useCallback(async (trackUris: string[], startIndex: number = 0, startTimeMs?: number) => {
     if (!playerRef.current || !isConnected) {
-      setError('Spelaren är inte ansluten')
-      return
+      const errorMsg = 'Spelaren är inte ansluten'
+      setError(errorMsg)
+      throw new Error(errorMsg)
     }
 
     try {
@@ -355,7 +405,9 @@ export const useSpotifyPlayer = (accessToken: string | null, onTrackEnd?: () => 
       })
       
       if (!userResponse.ok) {
-        throw new Error('Ogiltig access token')
+        const errorMsg = 'Ogiltig access token'
+        setError(errorMsg)
+        throw new Error(errorMsg)
       }
       
       const userData = await userResponse.json()
@@ -387,16 +439,22 @@ export const useSpotifyPlayer = (accessToken: string | null, onTrackEnd?: () => 
         console.error('Playlist play error response:', errorText)
         
         if (response.status === 404) {
-          throw new Error('Ingen aktiv Spotify-session. Öppna Spotify-appen och försök igen.')
+          const errorMsg = 'Ingen aktiv Spotify-session. Öppna Spotify-appen och försök igen.'
+          setError(errorMsg)
+          throw new Error(errorMsg)
         }
         
-        throw new Error(`Kunde inte spela spellistan: ${response.status} ${errorText}`)
+        const errorMsg = `Kunde inte spela spellistan: ${response.status} ${errorText}`
+        setError(errorMsg)
+        throw new Error(errorMsg)
       }
       
       console.log('Playlist play successful')
     } catch (error) {
       console.error('Fel vid uppspelning av spellista:', error)
-      setError(`Kunde inte spela spellistan: ${error instanceof Error ? error.message : 'Okänt fel'}`)
+      const errorMsg = `Kunde inte spela spellistan: ${error instanceof Error ? error.message : 'Okänt fel'}`
+      setError(errorMsg)
+      throw error // Kasta fel vidare så att anropande kod kan hantera det
     }
   }, [isConnected, deviceId])
 

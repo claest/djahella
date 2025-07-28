@@ -26,10 +26,21 @@ async function ensureTableExists() {
         queues JSON,
         start_points JSON,
         use_start_times JSON,
+        fade_in_settings JSON,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
       )
     `)
+    
+    // Lägg till fade_in_settings kolumn om den inte finns
+    try {
+      await pool.execute(`
+        ALTER TABLE user_data 
+        ADD COLUMN fade_in_settings JSON DEFAULT ('{}')
+      `)
+    } catch (error) {
+      // Kolumnen finns redan, ignorera felet
+    }
   } catch (error) {
     console.error('Fel vid skapande av tabell:', error)
   }
@@ -87,7 +98,7 @@ export async function GET(request: NextRequest) {
     await ensureTableExists()
 
     const [rows] = await pool.execute(
-      'SELECT queues, start_points, use_start_times FROM user_data WHERE user_id = ?',
+      'SELECT queues, start_points, use_start_times, fade_in_settings FROM user_data WHERE user_id = ?',
       [userId]
     )
 
@@ -101,6 +112,7 @@ export async function GET(request: NextRequest) {
       let queues = []
       let startPoints = {}
       let useStartTimes = {}
+      let fadeInSettings = {}
       
       try {
         if (row.queues) {
@@ -112,14 +124,17 @@ export async function GET(request: NextRequest) {
         if (row.use_start_times) {
           useStartTimes = typeof row.use_start_times === 'string' ? JSON.parse(row.use_start_times) : row.use_start_times
         }
+        if (row.fade_in_settings) {
+          fadeInSettings = typeof row.fade_in_settings === 'string' ? JSON.parse(row.fade_in_settings) : row.fade_in_settings
+        }
       } catch (parseError) {
         console.error('JSON parse error:', parseError)
-        console.log('Problematic data:', { queues: row.queues, startPoints: row.start_points, useStartTimes: row.use_start_times })
+        console.log('Problematic data:', { queues: row.queues, startPoints: row.start_points, useStartTimes: row.use_start_times, fadeInSettings: row.fade_in_settings })
       }
       
-      return NextResponse.json({ queues, startPoints, useStartTimes })
+      return NextResponse.json({ queues, startPoints, useStartTimes, fadeInSettings })
     } else {
-      return NextResponse.json({ queues: [], startPoints: {}, useStartTimes: {} })
+      return NextResponse.json({ queues: [], startPoints: {}, useStartTimes: {}, fadeInSettings: {} })
     }
   } catch (error) {
     console.error('Fel vid GET /api/queues:', error)
@@ -130,7 +145,7 @@ export async function GET(request: NextRequest) {
 // POST: Spara köer, startpunkter och useStartTimes för en användare
 export async function POST(request: NextRequest) {
   try {
-    const { userId, queues, startPoints, useStartTimes } = await request.json()
+    const { userId, queues, startPoints, useStartTimes, fadeInSettings } = await request.json()
     if (!userId) {
       return NextResponse.json({ error: 'userId krävs' }, { status: 400 })
     }
@@ -140,15 +155,17 @@ export async function POST(request: NextRequest) {
     const queuesJson = JSON.stringify(queues || [])
     const startPointsJson = JSON.stringify(startPoints || {})
     const useStartTimesJson = JSON.stringify(useStartTimes || {})
+    const fadeInSettingsJson = JSON.stringify(fadeInSettings || {})
 
     await pool.execute(
-      `INSERT INTO user_data (user_id, queues, start_points, use_start_times) 
-       VALUES (?, ?, ?, ?) 
+      `INSERT INTO user_data (user_id, queues, start_points, use_start_times, fade_in_settings) 
+       VALUES (?, ?, ?, ?, ?) 
        ON DUPLICATE KEY UPDATE 
          queues = VALUES(queues), 
          start_points = VALUES(start_points), 
-         use_start_times = VALUES(use_start_times)`,
-      [userId, queuesJson, startPointsJson, useStartTimesJson]
+         use_start_times = VALUES(use_start_times),
+         fade_in_settings = VALUES(fade_in_settings)`,
+      [userId, queuesJson, startPointsJson, useStartTimesJson, fadeInSettingsJson]
     )
 
     return NextResponse.json({ ok: true })

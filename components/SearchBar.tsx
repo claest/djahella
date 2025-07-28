@@ -63,22 +63,22 @@ export default function SearchBar({ onSearch, isLoading }: SearchBarProps) {
   }
 
   return (
-    <div className="bg-spotify-dark rounded-lg p-6">
-      <h2 className="text-xl font-semibold text-white mb-4">Sök låtar</h2>
-      <form onSubmit={handleSubmit} className="space-y-4">
-        <div className="flex gap-2">
+    <div className="bg-spotify-dark rounded-lg p-3 lg:p-6">
+      <h2 className="text-lg lg:text-xl font-semibold text-white mb-3 lg:mb-4">Sök låtar</h2>
+      <form onSubmit={handleSubmit} className="space-y-3 lg:space-y-4">
+        <div className="flex flex-col lg:flex-row gap-2">
           <input
             type="text"
             value={query}
             onChange={handleInputChange}
             placeholder="Sök efter låtar, artister eller album..."
-            className="flex-1 px-4 py-2 bg-spotify-black text-white rounded-lg border border-spotify-light focus:border-spotify-green focus:outline-none"
+            className="flex-1 px-3 py-2 lg:px-4 lg:py-2 bg-spotify-black text-white rounded-lg border border-spotify-light focus:border-spotify-green focus:outline-none text-sm lg:text-base"
             disabled={isLoading}
           />
           <button
             type="submit"
             disabled={isLoading || !query.trim()}
-            className="px-6 py-2 bg-spotify-green text-white font-semibold rounded-lg hover:bg-green-600 disabled:opacity-50 disabled:cursor-not-allowed"
+            className="px-4 py-2 lg:px-6 lg:py-2 bg-spotify-green text-white font-semibold rounded-lg hover:bg-green-600 disabled:opacity-50 disabled:cursor-not-allowed text-sm lg:text-base transition-colors"
           >
             {isLoading ? 'Söker...' : 'Sök'}
           </button>
@@ -86,22 +86,22 @@ export default function SearchBar({ onSearch, isLoading }: SearchBarProps) {
       </form>
       {isLoading && (
         <div className="mt-2 text-center">
-          <div className="inline-flex items-center text-spotify-light text-sm">
-            <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-spotify-green mr-2"></div>
+          <div className="inline-flex items-center text-spotify-light text-xs lg:text-sm">
+            <div className="animate-spin rounded-full h-3 w-3 lg:h-4 lg:w-4 border-b-2 border-spotify-green mr-2"></div>
             Söker...
           </div>
         </div>
       )}
       {query && query.length < 2 && !isLoading && (
         <div className="mt-2 text-center">
-          <p className="text-spotify-light text-sm">
+          <p className="text-spotify-light text-xs lg:text-sm">
             Skriv minst 2 tecken för att söka...
           </p>
         </div>
       )}
       {query && query.length >= 2 && !isLoading && (
         <div className="mt-2 text-center">
-          <p className="text-spotify-light text-sm">
+          <p className="text-spotify-light text-xs lg:text-sm">
             Söker automatiskt om 600ms...
           </p>
         </div>

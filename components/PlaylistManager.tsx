@@ -94,7 +94,7 @@ const PlaylistManager: React.FC<PlaylistManagerProps> = ({
 
     setIsLoadingPlaylists(true)
     try {
-      const response = await fetch('https://api.spotify.com/v1/me/playlists?limit=50', {
+      const response = await fetch('https://api.spotify.com/v1/me/playlists?limit=50', { // Återställ till 50 - Spotify API max
         headers: {
           'Authorization': `Bearer ${accessToken}`
         }
@@ -478,25 +478,32 @@ const PlaylistManager: React.FC<PlaylistManagerProps> = ({
       const playlistData = await createResponse.json()
       const playlistId = playlistData.id
 
-      // Lägg till låtar i spellistan
+      // Lägg till låtar i spellistan - dela upp i chunks om 1000 låtar
       const trackUris = playlist.map(track => track.uri).filter(Boolean)
+      const chunkSize = 1000 // Öka från 100 till 1000 låtar per request
       
-      const addTracksResponse = await fetch(`https://api.spotify.com/v1/playlists/${playlistId}/tracks`, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${accessToken}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          uris: trackUris
+      for (let i = 0; i < trackUris.length; i += chunkSize) {
+        const chunk = trackUris.slice(i, i + chunkSize)
+        
+        const addTracksResponse = await fetch(`https://api.spotify.com/v1/playlists/${playlistId}/tracks`, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${accessToken}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            uris: chunk
+          })
         })
-      })
 
-      if (!addTracksResponse.ok) {
-        throw new Error('Kunde inte lägga till låtar i spellistan')
+        if (!addTracksResponse.ok) {
+          throw new Error(`Kunde inte lägga till låtar i spellistan (chunk ${Math.floor(i / chunkSize) + 1})`)
+        }
+        
+        console.log(`Lade till ${chunk.length} låtar i spellistan (chunk ${Math.floor(i / chunkSize) + 1}/${Math.ceil(trackUris.length / chunkSize)})`)
       }
 
-      alert(`Spellista sparad till Spotify! Namn: ${playlistData.name}`)
+      alert(`Spellista sparad till Spotify! Namn: ${playlistData.name} (${playlist.length} låtar)`)
       
       // Öppna spellistan i Spotify
       window.open(playlistData.external_urls.spotify, '_blank')

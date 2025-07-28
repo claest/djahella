@@ -63,8 +63,8 @@ export default function StartTimeEditor({
   }, [])
 
   const handleSave = async () => {
-    const timeMs = parseInt(startTimeText)
-    if (!isNaN(timeMs) && timeMs >= 0 && timeMs <= duration) {
+    const timeMs = parseInt(startTimeText) || 0
+    if (timeMs >= 0 && timeMs <= duration) {
       console.log('Saving start time:', { trackId, timeMs })
       if (userId) {
         // Hämta aktuell kö och useStartTimes/startPoints från servern
@@ -76,18 +76,36 @@ export default function StartTimeEditor({
           if (resGet.ok) {
             const data = await resGet.json()
             queues = data.queues || []
-            useStartTimes = { ...(data.useStartTimes || {}), [trackId]: true } // Sätt alltid true när man sparar starttid
-            startPoints = { ...(data.startPoints || {}), [trackId]: timeMs }
+            
+            if (timeMs === 0) {
+              // Ta bort starttid om 0 är valt
+              const { [trackId]: removedStartPoint, ...remainingStartPoints } = data.startPoints || {}
+              const { [trackId]: removedUseStartTime, ...remainingUseStartTimes } = data.useStartTimes || {}
+              startPoints = remainingStartPoints
+              useStartTimes = remainingUseStartTimes
+              console.log('Removing start time for track:', { trackId })
+            } else {
+              // Spara starttid
+              useStartTimes = { ...(data.useStartTimes || {}), [trackId]: true }
+              startPoints = { ...(data.startPoints || {}), [trackId]: timeMs }
+            }
           } else {
-            startPoints = { [trackId]: timeMs }
-            useStartTimes = { [trackId]: true }
+            if (timeMs === 0) {
+              // Ta bort starttid om 0 är valt
+              startPoints = {}
+              useStartTimes = {}
+            } else {
+              // Spara starttid
+              startPoints = { [trackId]: timeMs }
+              useStartTimes = { [trackId]: true }
+            }
           }
           await fetch('/api/queues', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ userId, queues, startPoints, useStartTimes })
           })
-          console.log('Starttid och useStartTimes sparad separat till databasen:', { trackId, timeMs })
+          console.log(timeMs === 0 ? 'Starttid borttagen från databasen:' : 'Starttid och useStartTimes sparad separat till databasen:', { trackId, timeMs })
         } catch (error) {
           console.error('Fel vid separat sparande av starttid till databasen:', error)
         }
@@ -110,7 +128,7 @@ export default function StartTimeEditor({
       }
       
       debounceRef.current = setTimeout(() => {
-        onPlayTrack(track, timeMs / 1000)
+        onPlayTrack(track, timeMs)
       }, 300)
     }
   }
@@ -118,7 +136,7 @@ export default function StartTimeEditor({
   const playAtCurrentPosition = () => {
     if (onPlayTrack && track) {
       console.log('Playing at current position:', { trackName: track.name, startTimeMs })
-      onPlayTrack(track, startTimeMs / 1000)
+      onPlayTrack(track, startTimeMs)
     }
   }
 
@@ -153,6 +171,11 @@ export default function StartTimeEditor({
               ({formatTime(parseInt(startTimeText) || 0)})
             </span>
           </div>
+          {(parseInt(startTimeText) || 0) === 0 && (
+            <p className="text-xs text-yellow-400 mt-1">
+              💡 Välj 0 för att ta bort starttid och spela från början
+            </p>
+          )}
         </div>
 
         {/* Spela-knapp */}
@@ -207,7 +230,7 @@ export default function StartTimeEditor({
             onClick={handleSave}
             className="px-4 py-2 bg-spotify-green text-white text-sm rounded hover:bg-green-600"
           >
-            Spara
+            {(parseInt(startTimeText) || 0) === 0 ? 'Ta bort starttid' : 'Spara'}
           </button>
           <button
             onClick={onCancel}

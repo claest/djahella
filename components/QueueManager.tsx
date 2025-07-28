@@ -1,26 +1,14 @@
 'use client'
 
-import { useState, useEffect, useRef } from 'react'
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { Track } from '@/types/spotify'
 import StartTimeEditor from './StartTimeEditor'
+import SpotifyPlayer from './SpotifyPlayer'
 
 interface QueueManagerProps {
   playlist: Track[]
   onRemoveTrack: (index: number) => void
   onPlayTrack: (track: Track, startTimeMs?: number) => void
-  onPlayNext: () => void
-  onPlayPrevious: () => void
-  onTogglePlay: () => void
-  onVolumeChange: (volume: number) => void
-  onSeek?: (positionMs: number) => void
-  onShuffle: () => void
-  isPlaying: boolean
-  currentTrack: any
-  currentTime: number
-  duration: number
-  volume: number
-  isShuffled: boolean
-  currentTrackIndex: number
   onReorderTracks: (tracks: Track[]) => void
   onClearQueue: () => void
   accessToken?: string | null
@@ -28,55 +16,73 @@ interface QueueManagerProps {
   useStartTimes?: { [key: string]: boolean }
   setUseStartTimes?: React.Dispatch<React.SetStateAction<{ [key: string]: boolean }>>
   startPoints?: { [key: string]: number }
+  fadeInSettings?: { [key: string]: boolean }
+  onToggleFadeIn?: (trackId: string) => void
+  currentTrack?: any
+  // Spotify Player props
+  isPlaying?: boolean
+  currentTime?: number
+  duration?: number
+  volume?: number
+  isShuffled?: boolean
+  isPlayerReady?: boolean
+  onPlayNext?: () => void
+  onPlayPrevious?: () => void
+  onTogglePlay?: () => void
+  onVolumeChange?: (volume: number) => void
+  onSeek?: (positionMs: number) => void
+  onShuffle?: () => void
+  isPlayerMinimized?: boolean
+  onToggleMinimize?: () => void
 }
 
-export default function QueueManager({
+const QueueManager = React.memo(function QueueManager({
   playlist,
   onRemoveTrack,
   onPlayTrack,
-  onPlayNext,
-  onPlayPrevious,
-  onTogglePlay,
-  onVolumeChange,
-  onSeek,
-  onShuffle,
-  isPlaying,
-  currentTrack,
-  currentTime,
-  duration,
-  volume,
-  isShuffled,
-  currentTrackIndex,
   onReorderTracks,
   onClearQueue,
   accessToken,
   userId,
   useStartTimes: externalUseStartTimes,
   setUseStartTimes: externalSetUseStartTimes,
-  startPoints = {}
+  startPoints = {},
+  fadeInSettings: externalFadeInSettings,
+  onToggleFadeIn: externalOnToggleFadeIn,
+  currentTrack,
+  // Spotify Player props
+  isPlaying,
+  currentTime,
+  duration,
+  volume,
+  isShuffled,
+  isPlayerReady,
+  onPlayNext,
+  onPlayPrevious,
+  onTogglePlay,
+  onVolumeChange,
+  onSeek,
+  onShuffle,
+  isPlayerMinimized,
+  onToggleMinimize
 }: QueueManagerProps) {
 
   const [editingTrack, setEditingTrack] = useState<string | null>(null)
   const [internalUseStartTimes, setInternalUseStartTimes] = useState<{ [key: string]: boolean }>({})
-  const [fadeProgress, setFadeProgress] = useState(0)
-  
+  const [draggedIndex, setDraggedIndex] = useState<number | null>(null)
+  const [dragOverIndex, setDragOverIndex] = useState<number | null>(null)
+
+  // console.log('QueueManager render:', {
+  //   playlistLength: playlist.length,
+  //   trackNames: playlist.map(t => t.name)
+  // })
+
   // Använd externa useStartTimes om de finns, annars interna
   const useStartTimes = externalUseStartTimes || internalUseStartTimes
   const setUseStartTimes = externalSetUseStartTimes || setInternalUseStartTimes
-  const [draggedIndex, setDraggedIndex] = useState<number | null>(null)
-  const [dragOverIndex, setDragOverIndex] = useState<number | null>(null)
-  const [isFading, setIsFading] = useState(false)
-  const fadeTimeoutRef = useRef<NodeJS.Timeout | null>(null)
-
-  console.log('QueueManager render:', {
-    playlistLength: playlist.length,
-    trackNames: playlist.map(t => t.name)
-  })
-
-  // Ta bort localStorage-hantering av startTimes
 
   // Spara starttider till servern
-  const saveStartTimes = async (newStartTimes: { [key: string]: number }) => {
+  const saveStartTimes = useCallback(async (newStartTimes: { [key: string]: number }) => {
     if (!userId) return;
     try {
       // Hämta aktuell kö från servern
@@ -90,626 +96,359 @@ export default function QueueManager({
         if (!useStartTimesToSend || Object.keys(useStartTimesToSend).length === 0) {
           useStartTimesToSend = data.useStartTimes || {}
         }
+        
+        // Ta bort useStartTimes för låtar som inte längre har starttider
+        const removedTrackIds = Object.keys(data.startPoints || {}).filter(
+          trackId => !newStartTimes.hasOwnProperty(trackId)
+        )
+        removedTrackIds.forEach(trackId => {
+          delete useStartTimesToSend[trackId]
+        })
       }
-      // Spara till databasen
+
+      // Skicka till servern
       const res = await fetch('/api/queues', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-          userId, 
+        body: JSON.stringify({
+          userId,
           queues,
           startPoints: newStartTimes,
-          useStartTimes: useStartTimesToSend
+          useStartTimes: useStartTimesToSend,
+          fadeInSettings: externalFadeInSettings || {}
         })
       })
-      if (res.ok) {
-        console.log('Saved start times to database for user:', userId)
-      } else {
-        console.error('Failed to save start times to database')
+
+      if (!res.ok) {
+        throw new Error('Kunde inte spara starttider')
       }
     } catch (error) {
       console.error('Fel vid sparande av starttider:', error)
     }
-  }
+  }, [userId, useStartTimes, externalFadeInSettings])
 
-  // Debug: logga när playlist ändras
-  useEffect(() => {
-    console.log('QueueManager playlist changed:', {
-      length: playlist.length,
-      tracks: playlist.map(t => t.name)
-    })
-  }, [playlist])
-
-  const handleStartTimeEdit = (trackId: string) => {
+  const handleStartTimeEdit = useCallback((trackId: string) => {
     setEditingTrack(trackId)
-  }
-
-  const handleStartTimeSave = async (trackId: string, startTimeMs: number) => {
-    if (!userId) return;
-    const newStartTimes = { ...startPoints, [trackId]: startTimeMs }
-    // setStartTimes(newStartTimes) // Ta bort
-    await saveStartTimes(newStartTimes)
-    
-    // Automatiskt sätta useStartTimes till true för denna låt
-    setUseStartTimes(prev => {
-      const newUseStartTimes = { ...prev, [trackId]: true }
-      // Spara till databasen
-      const saveToDatabase = async () => {
-        try {
-          const resGet = await fetch(`/api/queues?userId=${encodeURIComponent(userId)}`)
-          let queues = []
-          let startPointsToSend = newStartTimes
-          if (resGet.ok) {
-            const data = await resGet.json()
-            queues = data.queues || []
-            if (!startPointsToSend || Object.keys(startPointsToSend).length === 0) {
-              startPointsToSend = data.startPoints || {}
-            }
-          }
-          const res = await fetch('/api/queues', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ 
-              userId, 
-              queues,
-              startPoints: startPointsToSend,
-              useStartTimes: newUseStartTimes
-            })
-          })
-          if (res.ok) {
-            console.log('Saved useStartTimes to database for user:', userId)
-          } else {
-            console.error('Failed to save useStartTimes to database')
-          }
-        } catch (error) {
-          console.error('Fel vid sparande av useStartTimes till databasen:', error)
-        }
-      }
-      saveToDatabase()
-      console.log('Auto-set useStartTimes to true for track:', trackId)
-      return newUseStartTimes
-    })
-    
-    // Uppdatera spellistan i huvudkomponenten med nya starttider
-    const updatedPlaylist = playlist.map(track => ({
-      ...track,
-      startTime: track.id === trackId ? startTimeMs : track.startTime
-    }))
-    onReorderTracks(updatedPlaylist)
-    
-    setEditingTrack(null)
-  }
-
-  const handleStartTimeCancel = () => {
-    setEditingTrack(null)
-  }
-
-  const toggleStartTimeUsage = async (trackId: string) => {
-    if (!userId) return;
-    const newUseStartTimes = {
-      ...useStartTimes,
-      [trackId]: !useStartTimes[trackId]
-    };
-    setUseStartTimes(newUseStartTimes);
-
-    // Spara till databasen
-    try {
-      const resGet = await fetch(`/api/queues?userId=${encodeURIComponent(userId)}`);
-      let queues = [];
-      let startPointsToSend = startPoints;
-      if (resGet.ok) {
-        const data = await resGet.json();
-        queues = data.queues || [];
-        startPointsToSend = data.startPoints || startPoints;
-      }
-      const res = await fetch('/api/queues', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-          userId, 
-          queues,
-          startPoints: startPointsToSend,
-          useStartTimes: newUseStartTimes
-        })
-      });
-      if (res.ok) {
-        console.log('Saved useStartTimes to database for user:', userId);
-      } else {
-        console.error('Failed to save useStartTimes to database');
-      }
-    } catch (error) {
-      console.error('Fel vid sparande av useStartTimes till databasen:', error);
-    }
-
-    // Uppdatera spellistan i huvudkomponenten för att reflektera ändringen
-    const updatedPlaylist = playlist.map(track => ({
-      ...track,
-      // Behåll startTime men låt useStartTimes styra om den används
-    }));
-    onReorderTracks(updatedPlaylist);
-  };
-
-  // Drag and drop handlers
-  const handleDragStart = (e: React.DragEvent, index: number) => {
-    console.log('Drag start:', { index, trackName: playlist[index]?.name })
-    setDraggedIndex(index)
-    e.dataTransfer.effectAllowed = 'move'
-    e.dataTransfer.setData('text/plain', index.toString())
-    // Sätt inte JSON data för omordning - det är bara för nya låtar från vänster
-  }
-
-  const handleDragOver = (e: React.DragEvent, index: number) => {
-    e.preventDefault()
-    e.stopPropagation()
-    e.dataTransfer.dropEffect = 'move'
-    setDragOverIndex(index)
-    console.log('Drag over:', { index, draggedIndex, trackName: playlist[index]?.name })
-  }
-
-  const handleDragLeave = (e: React.DragEvent) => {
-    e.preventDefault()
-    e.stopPropagation()
-    setDragOverIndex(null)
-  }
-
-  const handleDrop = (e: React.DragEvent, dropIndex: number) => {
-    e.preventDefault()
-    e.stopPropagation()
-    
-    // Kontrollera om det är en låt från vänster sida (JSON data) eller omordning (text data)
-    const jsonData = e.dataTransfer.getData('application/json')
-    const textData = e.dataTransfer.getData('text/plain')
-    
-    console.log('Drop event:', { jsonData: !!jsonData, textData: !!textData, dropIndex, draggedIndex })
-    
-    if (jsonData && !textData) {
-      // Lägg till ny låt från vänster sida (endast JSON data, ingen text data)
-      try {
-        const track = JSON.parse(jsonData)
-        console.log('Adding track from left side:', track.name)
-        const newPlaylist = [...playlist]
-        newPlaylist.splice(dropIndex, 0, track)
-        onReorderTracks(newPlaylist)
-      } catch (error) {
-        console.error('Fel vid drop av låt:', error)
-      }
-    } else if (textData) {
-      // Omordna befintliga låtar (text data från drag start)
-      const sourceIndex = parseInt(textData)
-      console.log('Reordering existing track:', { sourceIndex, dropIndex, draggedIndex })
-      
-      if (sourceIndex === dropIndex) {
-        console.log('Same position, no change needed')
-        setDraggedIndex(null)
-        setDragOverIndex(null)
-        return
-      }
-
-      // Skapa ny array med omordnade låtar
-      const newPlaylist = [...playlist]
-      const draggedTrack = newPlaylist[sourceIndex]
-      
-      console.log('Reordering tracks:', {
-        sourceIndex,
-        dropIndex,
-        draggedTrack: draggedTrack.name,
-        oldOrder: newPlaylist.map(t => t.name)
-      })
-      
-      // Ta bort låten från original position
-      newPlaylist.splice(sourceIndex, 1)
-      
-      // Lägg till låten på ny position
-      newPlaylist.splice(dropIndex, 0, draggedTrack)
-      
-      console.log('New order:', newPlaylist.map(t => t.name))
-      
-      // Uppdatera playlist
-      console.log('Calling onReorderTracks with:', newPlaylist.map(t => t.name))
-      onReorderTracks(newPlaylist)
-    }
-    
-    setDraggedIndex(null)
-    setDragOverIndex(null)
-  }
-
-  const handleDragEnd = () => {
-    setDraggedIndex(null)
-    setDragOverIndex(null)
-  }
-
-  const formatDuration = (ms: number) => {
-    const minutes = Math.floor(ms / 60000)
-    const seconds = Math.floor((ms % 60000) / 1000)
-    return `${minutes}:${seconds.toString().padStart(2, '0')}`
-  }
-
-  const formatTime = (ms: number) => {
-    const minutes = Math.floor(ms / 60000)
-    const seconds = Math.floor((ms % 60000) / 1000)
-    return `${minutes}:${seconds.toString().padStart(2, '0')}`
-  }
-
-  const handleSeek = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (onSeek && duration > 0) {
-      const seekPercentage = parseFloat(e.target.value)
-      const seekPositionMs = Math.floor((seekPercentage / 100) * duration)
-      onSeek(seekPositionMs)
-    }
-  }
-
-  // Fade-funktion
-  const handleNextWithFade = async () => {
-    if (isFading) return // förhindra dubbelklick
-    setIsFading(true)
-    setFadeProgress(0)
-    let fadeDuration = 10000 // 10 sekunder
-    const timeLeft = duration - currentTime
-    if (timeLeft < fadeDuration) fadeDuration = timeLeft
-    const steps = 20
-    const stepTime = fadeDuration / steps
-    const startVolume = volume
-    for (let i = 1; i <= steps; i++) {
-      fadeTimeoutRef.current = setTimeout(() => {
-        const newVolume = Math.max(0, Math.round(startVolume * (1 - i / steps)))
-        onVolumeChange(newVolume)
-        setFadeProgress(i / steps)
-        if (i === steps) {
-          setTimeout(() => {
-            onPlayNext()
-            setTimeout(() => {
-              onVolumeChange(startVolume)
-              setIsFading(false)
-              setFadeProgress(0)
-            }, 500)
-          }, 200)
-        }
-      }, i * stepTime)
-    }
-  }
-  useEffect(() => {
-    return () => {
-      if (fadeTimeoutRef.current) clearTimeout(fadeTimeoutRef.current)
-    }
   }, [])
 
-  // Vid rendering, använd startPoints-prop direkt:
-  const getTrackStartTime = (trackId: string) => startPoints[trackId] || 0;
-  const getTrackUseStartTime = (trackId: string) => useStartTimes[trackId] || false;
+  const handleStartTimeSave = useCallback(async (trackId: string, startTimeMs: number) => {
+    try {
+      let newStartPoints
+      if (startTimeMs === 0) {
+        // Ta bort starttid från lokalt state om 0
+        const { [trackId]: removed, ...remaining } = startPoints
+        newStartPoints = remaining
+        console.log('Starttid borttagen för låt:', trackId)
+      } else {
+        // Spara starttid
+        newStartPoints = { ...startPoints, [trackId]: startTimeMs }
+        console.log('Starttid sparad för låt:', trackId, startTimeMs)
+      }
+      
+      const saveToDatabase = async () => {
+        await saveStartTimes(newStartPoints)
+      }
+      
+      await saveToDatabase()
+      setEditingTrack(null)
+    } catch (error) {
+      console.error('Fel vid sparande av starttid:', error)
+    }
+  }, [startPoints, saveStartTimes])
+
+  const handleStartTimeCancel = useCallback(() => {
+    setEditingTrack(null)
+  }, [])
+
+  const toggleStartTimeUsage = useCallback(async (trackId: string) => {
+    try {
+      const newUseStartTimes = {
+        ...useStartTimes,
+        [trackId]: !useStartTimes[trackId]
+      }
+      
+      setUseStartTimes(newUseStartTimes)
+      
+      // Spara till servern
+      if (userId) {
+        const resGet = await fetch(`/api/queues?userId=${encodeURIComponent(userId)}`)
+        let queues = []
+        if (resGet.ok) {
+          const data = await resGet.json()
+          queues = data.queues || []
+        }
+
+        await fetch('/api/queues', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            userId,
+            queues,
+            startPoints,
+            useStartTimes: newUseStartTimes,
+            fadeInSettings: externalFadeInSettings || {}
+          })
+        })
+      }
+    } catch (error) {
+      console.error('Fel vid växling av starttid:', error)
+    }
+  }, [useStartTimes, setUseStartTimes, userId, startPoints, externalFadeInSettings])
+
+  // Drag and drop funktioner
+  const handleDragStart = useCallback((e: React.DragEvent, index: number) => {
+    setDraggedIndex(index)
+    e.dataTransfer.effectAllowed = 'move'
+  }, [])
+
+  const handleDragOver = useCallback((e: React.DragEvent, index: number) => {
+    e.preventDefault()
+    if (draggedIndex !== null && draggedIndex !== index) {
+      setDragOverIndex(index)
+    }
+  }, [draggedIndex])
+
+  const handleDragLeave = useCallback((e: React.DragEvent) => {
+    setDragOverIndex(null)
+  }, [])
+
+  const handleDrop = useCallback((e: React.DragEvent, dropIndex: number) => {
+    e.preventDefault()
+    if (draggedIndex !== null && draggedIndex !== dropIndex) {
+      const newPlaylist = [...playlist]
+      const [draggedTrack] = newPlaylist.splice(draggedIndex, 1)
+      newPlaylist.splice(dropIndex, 0, draggedTrack)
+      onReorderTracks(newPlaylist)
+    }
+    setDraggedIndex(null)
+    setDragOverIndex(null)
+  }, [draggedIndex, playlist, onReorderTracks])
+
+  const handleDragEnd = useCallback(() => {
+    setDraggedIndex(null)
+    setDragOverIndex(null)
+  }, [])
+
+  const formatDuration = useCallback((ms: number) => {
+    const minutes = Math.floor(ms / 60000)
+    const seconds = Math.floor((ms % 60000) / 1000)
+    return `${minutes}:${seconds.toString().padStart(2, '0')}`
+  }, [])
+
+  // Hjälpfunktioner för att hämta inställningar
+  const getTrackStartTime = useCallback((trackId: string) => startPoints[trackId] || 0, [startPoints]);
+  const getTrackUseStartTime = useCallback((trackId: string) => useStartTimes[trackId] || false, [useStartTimes]);
+  const getTrackFadeIn = useCallback((trackId: string) => externalFadeInSettings?.[trackId] || false, [externalFadeInSettings]);
 
   return (
     <div className="h-full flex flex-col">
       {/* Kö */}
       <div 
-        className="flex-1 overflow-y-auto mb-4"
+        className="flex-1 overflow-y-auto mb-4 lg:mb-6 pb-20 lg:pb-8"
         onDragOver={(e) => {
           e.preventDefault()
-          e.dataTransfer.dropEffect = 'copy'
-        }}
-        onDrop={(e) => {
-          e.preventDefault()
-          const jsonData = e.dataTransfer.getData('application/json')
-          console.log('Main queue drop zone:', { jsonData: !!jsonData })
-          if (jsonData) {
-            try {
-              const track = JSON.parse(jsonData)
-              console.log('Adding track to end of queue:', track.name)
-              const newPlaylist = [...playlist, track]
-              onReorderTracks(newPlaylist)
-            } catch (error) {
-              console.error('Fel vid drop av låt:', error)
-            }
-          }
         }}
       >
-        <div className="flex items-center justify-between mb-3">
-          <h3 className="text-lg font-semibold text-white">
-            Kö ({playlist.length} låtar)
-          </h3>
-          {playlist.length > 0 && (
-            <button
-              onClick={() => {
-                if (confirm('Är du säker på att du vill rensa hela kön?')) {
-                  onClearQueue()
-                }
-              }}
-              className="px-3 py-1 bg-red-600 text-white text-sm rounded hover:bg-red-700 transition-colors"
-              title="Ta bort alla låtar från köen"
+        <div className="space-y-2">
+          {playlist.map((track, index) => (
+            <div
+              key={`${track.id}-${index}`}
+              draggable
+              onDragStart={(e) => handleDragStart(e, index)}
+              onDragOver={(e) => handleDragOver(e, index)}
+              onDragLeave={handleDragLeave}
+              onDrop={(e) => handleDrop(e, index)}
+              onDragEnd={handleDragEnd}
+              className={`bg-spotify-dark rounded-lg p-3 lg:p-4 border transition-all cursor-move ${
+                draggedIndex === index ? 'opacity-50' : ''
+              } ${
+                dragOverIndex === index ? 'border-spotify-green bg-gray-800' : 
+                currentTrack?.id === track.id ? 'border-spotify-green bg-spotify-green bg-opacity-10' :
+                'border-gray-700 hover:border-gray-600'
+              }`}
             >
-              Rensa kö
-            </button>
-          )}
-        </div>
-        
-        {playlist.length === 0 ? (
-          <div 
-            className="text-center py-8 border-2 border-dashed border-gray-600 rounded-lg hover:border-gray-500 transition-colors"
-            onDragOver={(e) => {
-              e.preventDefault()
-              e.dataTransfer.dropEffect = 'copy'
-            }}
-                    onDrop={(e) => {
-          e.preventDefault()
-          const jsonData = e.dataTransfer.getData('application/json')
-          console.log('Empty queue drop zone:', { jsonData: !!jsonData })
-          if (jsonData) {
-            try {
-              const track = JSON.parse(jsonData)
-              console.log('Adding track to empty queue:', track.name)
-              onReorderTracks([track])
-            } catch (error) {
-              console.error('Fel vid drop av låt:', error)
-            }
-          }
-        }}
-          >
-            <p className="text-gray-400 mb-2">Inga låtar i kö än.</p>
-            <p className="text-sm text-gray-500">Dra låtar från vänster sida hit för att bygga din kö</p>
-          </div>
-        ) : (
-          <div className="space-y-2">
-            {playlist.map((track, index) => (
-              <div
-                key={`${track.id}-${index}`}
-                draggable={editingTrack !== track.id}
-                onDragStart={editingTrack !== track.id ? (e) => handleDragStart(e, index) : undefined}
-                onDragOver={editingTrack !== track.id ? (e) => handleDragOver(e, index) : undefined}
-                onDragLeave={editingTrack !== track.id ? handleDragLeave : undefined}
-                onDrop={editingTrack !== track.id ? (e) => handleDrop(e, index) : undefined}
-                onDragEnd={editingTrack !== track.id ? handleDragEnd : undefined}
-                className={`p-3 rounded-lg border transition-all cursor-move ${
-                  index === currentTrackIndex
-                    ? 'bg-spotify-green/20 border-spotify-green'
-                    : draggedIndex === index
-                    ? 'bg-gray-700 border-gray-500 opacity-50'
-                    : dragOverIndex === index
-                    ? 'bg-blue-600/20 border-blue-500'
-                    : 'bg-spotify-black border-gray-700 hover:border-gray-600'
-                } ${editingTrack === track.id ? 'cursor-default' : ''}`}
-              >
-                <div className="flex items-center space-x-3">
-                  <div className="text-gray-400 text-lg cursor-move">⋮⋮</div>
-                  {track.album?.images?.[0]?.url && (
-                    <img src={track.album.images[0].url} alt={track.name} className="w-10 h-10 rounded" />
-                  )}
-                  <div className="flex-1 min-w-0">
-                    <p 
-                      className={`font-medium truncate cursor-pointer hover:text-spotify-green transition-colors ${
-                        index === currentTrackIndex ? 'text-spotify-green' : 'text-white'
-                      }`}
-                      onClick={() => {
-                        const startTime = getTrackStartTime(track.id)
-                        const shouldUseStartTime = getTrackUseStartTime(track.id) && startTime
-                        console.log('Playing track:', { 
-                          trackName: track.name, 
-                          startTime, 
-                          shouldUseStartTime,
-                          useStartTime: getTrackUseStartTime(track.id)
-                        })
-                        // Skicka startTime direkt i millisekunder (som handlePlayNext gör)
-                        onPlayTrack(track, shouldUseStartTime ? startTime : undefined)
-                      }}
-                      title="Klicka för att spela"
-                    >
-                      {track.name}
-                    </p>
-                    <p className="text-sm text-spotify-light truncate">
-                      {track.artists?.[0]?.name || 'Okänd artist'}
-                    </p>
-                    {startPoints[track.id] && (
-                      <div className="flex items-center space-x-2">
-                        <p className="text-xs text-spotify-green">
-                          Starttid: {Math.floor(startPoints[track.id] / 1000)}s ({startPoints[track.id]} ms)
-                        </p>
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation()
-                            toggleStartTimeUsage(track.id)
-                          }}
-                          className={`px-1 py-0.5 text-xs rounded ${
-                            useStartTimes[track.id] 
-                              ? 'bg-spotify-green text-white' 
-                              : 'bg-gray-600 text-gray-300'
-                          }`}
-                          title={useStartTimes[track.id] ? 'Använder starttid - klicka för att spela från början' : 'Spelar från början - klicka för att använda starttid'}
-                        >
-                          {useStartTimes[track.id] ? '✓' : '○'}
-                        </button>
-                      </div>
-                    )}
+              <div className="flex items-center justify-between">
+                <div className="flex items-center space-x-3 flex-1 min-w-0">
+                  {/* Drag handle */}
+                  <div className="text-gray-500 hover:text-gray-300 cursor-move">
+                    <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
+                      <path d="M3 18h18v-2H3v2zm0-5h18v-2H3v2zm0-7v2h18V6H3z"/>
+                    </svg>
                   </div>
-                  <div className="flex items-center space-x-1">
-                    <button
-                      onClick={() => {
-                        const startTime = getTrackStartTime(track.id)
-                        const shouldUseStartTime = getTrackUseStartTime(track.id) && startTime
-                        console.log('Playing track from button:', { 
-                          trackName: track.name, 
-                          trackId: track.id,
-                          startTime, 
-                          shouldUseStartTime,
-                          useStartTime: getTrackUseStartTime(track.id),
-                          allUseStartTimes: useStartTimes
-                        })
-                        // Skicka startTime direkt i millisekunder (som handlePlayNext gör)
-                        onPlayTrack(track, shouldUseStartTime ? startTime : undefined)
-                      }}
-                      className="px-2 py-1 bg-spotify-green text-white text-xs rounded hover:bg-green-600"
-                    >
-                      Spela
-                    </button>
-                    <button
-                      onClick={() => handleStartTimeEdit(track.id)}
-                      className="px-2 py-1 bg-blue-600 text-white text-xs rounded hover:bg-blue-700"
-                    >
-                      Starttid
-                    </button>
-                    <button
-                      onClick={() => onRemoveTrack(index)}
-                      className="px-2 py-1 bg-red-600 text-white text-xs rounded hover:bg-red-700"
-                    >
-                      Ta bort
-                    </button>
+
+                  {/* Album cover */}
+                  {track.album?.images?.[0]?.url && (
+                    <img 
+                      src={track.album.images[0].url} 
+                      alt={track.name} 
+                      className="w-12 h-12 lg:w-14 lg:h-14 rounded flex-shrink-0"
+                    />
+                  )}
+
+                  {/* Track info */}
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center space-x-2">
+                      <p className="font-medium text-white text-sm lg:text-base truncate">{track.name}</p>
+                      {currentTrack?.id === track.id && (
+                        <div className="flex items-center space-x-1">
+                          <div className="w-2 h-2 bg-spotify-green rounded-full animate-pulse"></div>
+                          <span className="text-spotify-green text-xs font-medium">SPELAR</span>
+                        </div>
+                      )}
+                    </div>
+                    <p className="text-xs lg:text-sm text-spotify-light truncate">
+                      {track.artists?.map(artist => artist.name).join(', ') || 'Okänd artist'}
+                    </p>
+                    <p className="text-xs text-gray-500">
+                      {formatDuration(track.duration_ms)} • {track.album?.name || 'Okänt album'}
+                      {getTrackUseStartTime(track.id) && getTrackStartTime(track.id) > 0 && (
+                        <span className="text-yellow-400 ml-2">
+                          • Startar vid {formatDuration(getTrackStartTime(track.id))}
+                        </span>
+                      )}
+                      {getTrackFadeIn(track.id) && (
+                        <span className="text-blue-400 ml-2">
+                          • Fade-in aktiverat
+                        </span>
+                      )}
+                    </p>
                   </div>
                 </div>
-                
-                {/* Starttid redigering */}
-                {editingTrack === track.id && (
-                  <div className="mt-3">
-                    <StartTimeEditor
-                      trackId={track.id}
-                      trackName={track.name}
-                      duration={track.duration_ms}
-                      onSave={handleStartTimeSave}
-                      onCancel={handleStartTimeCancel}
-                      onPlayTrack={onPlayTrack}
-                      track={track}
-                      accessToken={accessToken}
-                      userId={userId}
-                    />
-                  </div>
-                )}
+
+                {/* Controls */}
+                <div className="flex items-center space-x-2 ml-3">
+                  {/* Start time toggle */}
+                  <button
+                    onClick={() => toggleStartTimeUsage(track.id)}
+                    className={`p-2 rounded-lg transition-colors ${
+                      getTrackUseStartTime(track.id) 
+                        ? 'bg-spotify-green text-white' 
+                        : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                    }`}
+                    title={getTrackUseStartTime(track.id) ? 'Starttid aktiverad' : 'Starttid inaktiverad'}
+                  >
+                    <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
+                      <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/>
+                    </svg>
+                  </button>
+
+                  {/* Edit start time button */}
+                  {getTrackUseStartTime(track.id) && (
+                    <button
+                      onClick={() => handleStartTimeEdit(track.id)}
+                      className={`p-2 rounded-lg transition-colors ${
+                        editingTrack === track.id
+                          ? 'bg-yellow-600 text-white'
+                          : 'bg-yellow-700 text-white hover:bg-yellow-600'
+                      }`}
+                      title="Redigera starttid"
+                    >
+                      <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
+                        <path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04c.39-.39.39-1.02 0-1.41l-2.34-2.34c-.39-.39-1.02-.39-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/>
+                      </svg>
+                    </button>
+                  )}
+
+                  {/* Fade-in toggle */}
+                  <button
+                    onClick={() => externalOnToggleFadeIn?.(track.id)}
+                    className={`p-2 rounded-lg transition-colors ${
+                      getTrackFadeIn(track.id) 
+                        ? 'bg-blue-600 text-white' 
+                        : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                    }`}
+                    title={getTrackFadeIn(track.id) ? 'Fade-in aktiverat' : 'Fade-in inaktiverat'}
+                  >
+                    <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
+                      <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/>
+                    </svg>
+                  </button>
+
+                  {/* Play button */}
+                  <button
+                    onClick={() => {
+                      const shouldUseStartTime = getTrackUseStartTime(track.id) && getTrackStartTime(track.id) > 0
+                      const startTimeMs = shouldUseStartTime ? getTrackStartTime(track.id) : undefined
+                      onPlayTrack(track, startTimeMs)
+                    }}
+                    className="p-2 bg-spotify-green text-white rounded-lg hover:bg-green-600 transition-colors"
+                    title="Spela låt"
+                  >
+                    <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
+                      <path d="M8 5v14l11-7z"/>
+                    </svg>
+                  </button>
+
+                  {/* Remove button */}
+                  <button
+                    onClick={() => onRemoveTrack(index)}
+                    className="p-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors"
+                    title="Ta bort från kö"
+                  >
+                    <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
+                      <path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/>
+                    </svg>
+                  </button>
+                </div>
               </div>
-            ))}
-            
-            {/* Drop zone för att lägga till låtar i slutet */}
-            <div
-              onDragOver={(e) => {
-                e.preventDefault()
-                e.dataTransfer.dropEffect = 'copy'
-              }}
-              onDrop={(e) => {
-                e.preventDefault()
-                const jsonData = e.dataTransfer.getData('application/json')
-                console.log('End of queue drop zone:', { jsonData: !!jsonData })
-                if (jsonData) {
-                  try {
-                    const track = JSON.parse(jsonData)
-                    console.log('Adding track to end via drop zone:', track.name)
-                    const newPlaylist = [...playlist, track]
-                    onReorderTracks(newPlaylist)
-                  } catch (error) {
-                    console.error('Fel vid drop av låt:', error)
-                  }
-                }
-              }}
-              className="p-4 border-2 border-dashed border-gray-600 rounded-lg text-center hover:border-gray-500 transition-colors"
-            >
-              <p className="text-gray-400 text-sm">Dra låtar hit för att lägga till i slutet av kön</p>
+
+              {/* Start time editor - separat sektion */}
+              {getTrackUseStartTime(track.id) && editingTrack === track.id && (
+                <div className="mt-3">
+                  <StartTimeEditor
+                    trackId={track.id}
+                    trackName={track.name}
+                    duration={track.duration_ms}
+                    onSave={handleStartTimeSave}
+                    onCancel={handleStartTimeCancel}
+                    onPlayTrack={onPlayTrack}
+                    track={track}
+                    accessToken={accessToken}
+                    userId={userId}
+                  />
+                </div>
+              )}
             </div>
+          ))}
+        </div>
+
+        {playlist.length === 0 && (
+          <div className="text-center py-8">
+            <p className="text-gray-400">Ingen musik i kö</p>
+            <p className="text-sm text-gray-500 mt-2">Sök efter låtar och lägg till dem i kö</p>
           </div>
         )}
       </div>
 
-      {/* Nuvarande låt och kontroller */}
-      <div className="bg-spotify-dark rounded-lg p-4 border border-gray-700">
-        <h3 className="text-lg font-semibold text-white mb-3">Nu spelar</h3>
-        {currentTrack ? (
-          <div className="space-y-3">
-            <div className="flex items-center space-x-3">
-              {currentTrack?.album?.images?.[0]?.url && (
-                <img src={currentTrack.album.images[0].url} alt={currentTrack.name} className="w-16 h-16 rounded" />
-              )}
-              <div className="flex-1">
-                <p className="font-medium text-white">{currentTrack?.name}</p>
-                <p className="text-sm text-spotify-light">
-                  {currentTrack?.artists?.[0]?.name || 'Okänd artist'}
-                </p>
-              </div>
-            </div>
-            
-            {/* Progress bar med spolmarkör */}
-            <div className="space-y-2">
-              <div className="flex justify-between text-xs text-spotify-light">
-                <span>{formatTime(currentTime)}</span>
-                <span>{formatTime(duration)}</span>
-              </div>
-              <div className="relative">
-                <input
-                  type="range"
-                  min="0"
-                  max="100"
-                  value={duration > 0 ? (currentTime / duration) * 100 : 0}
-                  onChange={handleSeek}
-                  className="w-full h-2 bg-gray-600 rounded-lg appearance-none cursor-pointer slider"
-                  style={{
-                    background: `linear-gradient(to right, #1DB954 0%, #1DB954 ${duration > 0 ? (currentTime / duration) * 100 : 0}%, #4B5563 ${duration > 0 ? (currentTime / duration) * 100 : 0}%, #4B5563 100%)`
-                  }}
-                />
-              </div>
-            </div>
 
-            {/* Kontroller */}
-            <div className="flex justify-center space-x-4">
-              <button
-                onClick={onPlayPrevious}
-                className="p-2 bg-spotify-dark text-white rounded-full hover:bg-gray-700 border border-gray-600"
-                title="Föregående låt"
-              >
-                PREV
-              </button>
-              <button
-                onClick={onTogglePlay}
-                className="p-3 bg-spotify-green text-white rounded-full hover:bg-green-600"
-                title={isPlaying ? 'Pausa' : 'Spela'}
-              >
-                {isPlaying ? 'PAUSE' : 'PLAY'}
-              </button>
-              <button
-                onClick={onPlayNext}
-                className="p-2 bg-spotify-dark text-white rounded-full hover:bg-gray-700 border border-gray-600"
-                title="Nästa låt"
-              >
-                NEXT
-              </button>
-              <button
-                onClick={handleNextWithFade}
-                className="p-2 bg-yellow-600 text-white rounded-full hover:bg-yellow-700 border border-yellow-700 ml-2 disabled:opacity-50"
-                title="Nästa låt med fade"
-                disabled={isFading}
-              >
-                Next with fade
-              </button>
-            </div>
-            {isFading && (
-              <div className="w-full mt-2 flex flex-col items-center">
-                <div className="w-2/3 h-2 bg-gray-700 rounded-full overflow-hidden">
-                  <div
-                    className="h-2 bg-yellow-400 transition-all"
-                    style={{ width: `${Math.round(fadeProgress * 100)}%` }}
-                  />
-                </div>
-                <span className="text-xs text-yellow-300 mt-1">Fadar ut... {Math.round(fadeProgress * 100)}%</span>
-              </div>
-            )}
 
-            {/* Volym */}
-            <div className="flex items-center space-x-2">
-              <span className="text-xs text-spotify-light">
-                {volume === 0 ? '🔇' : volume < 30 ? '🔈' : volume < 70 ? '🔉' : '🔊'}
-              </span>
-              <input
-                type="range"
-                min="0"
-                max="100"
-                value={volume}
-                onChange={(e) => {
-                  const newVolume = Number(e.target.value)
-                  console.log('Volume slider changed:', newVolume)
-                  onVolumeChange(newVolume)
-                }}
-                className="flex-1 h-2 bg-gray-600 rounded-lg appearance-none cursor-pointer slider"
-                style={{
-                  background: `linear-gradient(to right, #1DB954 0%, #1DB954 ${volume}%, #4B5563 ${volume}%, #4B5563 100%)`
-                }}
-              />
-              <span className="text-xs text-spotify-light w-8">{volume}%</span>
-            </div>
-          </div>
-        ) : (
-          <p className="text-gray-400">Ingen låt spelar just nu.</p>
-        )}
+      {/* Spotify Player - Endast synlig på desktop */}
+      <div className="hidden lg:block">
+        <SpotifyPlayer
+          currentTrack={currentTrack}
+          isPlaying={isPlaying || false}
+          currentTime={currentTime || 0}
+          duration={duration || 0}
+          volume={volume || 50}
+          isShuffled={isShuffled || false}
+          isPlayerReady={isPlayerReady || false}
+          onPlayNext={onPlayNext || (() => {})}
+          onPlayPrevious={onPlayPrevious || (() => {})}
+          onTogglePlay={onTogglePlay || (() => {})}
+          onVolumeChange={onVolumeChange || (() => {})}
+          onSeek={onSeek || (() => {})}
+          onShuffle={onShuffle || (() => {})}
+          isMinimized={isPlayerMinimized || false}
+          onToggleMinimize={onToggleMinimize || (() => {})}
+          playlist={playlist}
+          fadeInSettings={externalFadeInSettings}
+          onPlayTrack={onPlayTrack}
+          startPoints={startPoints}
+          useStartTimes={externalUseStartTimes}
+        />
       </div>
     </div>
   )
-} 
+})
+
+export default QueueManager

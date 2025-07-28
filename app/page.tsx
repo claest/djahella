@@ -2,31 +2,32 @@
 
 import { useState, useEffect, useRef } from 'react'
 import { Track } from '@/types/spotify'
-import SpotifyAuth from '@/components/SpotifyAuth'
+import { useSpotifyPlayer } from '@/hooks/useSpotifyPlayer'
 import SearchBar from '@/components/SearchBar'
 import TrackList from '@/components/TrackList'
+import QueueManager from '@/components/QueueManager'
 import QueueSaver from '@/components/QueueSaver'
 import SpotifyPlaylistLoader from '@/components/SpotifyPlaylistLoader'
-import QueueManager from '@/components/QueueManager'
-import { useSpotifyPlayer } from '@/hooks/useSpotifyPlayer'
-import PlaylistViewer from '@/components/PlaylistViewer'
+import SpotifyAuth from '@/components/SpotifyAuth'
+import SpotifyPlayer from '@/components/SpotifyPlayer'
 
 // --- Server-synk och migrering ---
 async function fetchServerQueuesAndStartPoints(userId: string) {
   const res = await fetch(`/api/queues?userId=${encodeURIComponent(userId)}`)
-  if (!res.ok) return { queues: [], startPoints: {}, useStartTimes: {} }
+  if (!res.ok) return { queues: [], startPoints: {}, useStartTimes: {}, fadeInSettings: {} }
   return await res.json()
 }
 
 async function saveServerQueuesAndStartPoints(userId: string, queues: any[]) {
-  // Hämta aktuella startPoints och useStartTimes från servern
+  // Hämta aktuella startPoints, useStartTimes och fadeInSettings från servern
   const serverData = await fetchServerQueuesAndStartPoints(userId)
   const startPoints = serverData.startPoints || {}
   const useStartTimes = serverData.useStartTimes || {}
+  const fadeInSettings = serverData.fadeInSettings || {}
   await fetch('/api/queues', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ userId, queues, startPoints, useStartTimes })
+    body: JSON.stringify({ userId, queues, startPoints, useStartTimes, fadeInSettings })
   })
 }
 
@@ -36,14 +37,22 @@ export default function Home() {
   const [playlistName, setPlaylistName] = useState<string>('')
   const onTrackEndRef = useRef<(() => void) | null>(null)
   const [accessToken, setAccessToken] = useState<string | null>(null)
+  const [refreshToken, setRefreshToken] = useState<string | null>(null)
+  const [tokenExpiry, setTokenExpiry] = useState<number | null>(null)
   const [userId, setUserId] = useState<string | null>(null)
   const [isLoading, setIsLoading] = useState(false)
   const [currentTrackIndex, setCurrentTrackIndex] = useState<number>(-1)
   const [isShuffled, setIsShuffled] = useState(false)
   const [useStartTimes, setUseStartTimes] = useState<{ [key: string]: boolean }>({})
+  const [fadeInSettings, setFadeInSettings] = useState<{ [key: string]: boolean }>({})
   const [showQueues, setShowQueues] = useState(true)
   const [showSpotifyLists, setShowSpotifyLists] = useState(true)
+  const [showQueue, setShowQueue] = useState(true)
   const [startPoints, setStartPoints] = useState<{ [key: string]: number }>({})
+  const [showSearch, setShowSearch] = useState(true)
+  const [activeTab, setActiveTab] = useState<'search' | 'queue' | 'saved' | 'playlists'>('search')
+  const [isPlayerExpanded, setIsPlayerExpanded] = useState(false)
+  const [isPlayerMinimized, setIsPlayerMinimized] = useState(false)
 
   // Spotify Player hook
   const {
@@ -76,15 +85,98 @@ export default function Home() {
     }
   })
 
-  // Ladda access token från localStorage vid sidladdning
+  // Retry-mekanism för när spelaren blir redo
+  const [pendingPlayRequest, setPendingPlayRequest] = useState<{
+    track: Track;
+    startTime?: number;
+  } | null>(null)
+  const [retryCount, setRetryCount] = useState(0)
+  const maxRetries = 5
+
+  // När spelaren blir redo, försök spela pending request
+  useEffect(() => {
+    if (isReady && pendingPlayRequest) {
+      console.log('Player is now ready, attempting to play pending request')
+      const { track, startTime } = pendingPlayRequest
+      setPendingPlayRequest(null)
+      setRetryCount(0) // Återställ retry-räknare
+      
+      // Försök spela med en längre fördröjning för att säkerställa att spelaren är helt redo
+      setTimeout(() => {
+        handlePlayTrack(track, startTime)
+      }, 1000) // Öka från 500ms till 1000ms
+    }
+  }, [isReady, pendingPlayRequest])
+
+  // Retry-mekanism för när spelaren fortfarande inte är redo
+  useEffect(() => {
+    if (pendingPlayRequest && !isReady && retryCount < maxRetries) {
+      const retryTimer = setTimeout(() => {
+        console.log(`Retry attempt ${retryCount + 1}/${maxRetries} for pending play request`)
+        setRetryCount(prev => prev + 1)
+        
+        // Om spelaren fortfarande inte är redo efter flera försök, visa meddelande
+        if (retryCount + 1 >= maxRetries) {
+          console.log('Max retries reached, clearing pending request')
+          setPendingPlayRequest(null)
+          setRetryCount(0)
+          alert('Spotify-spelaren kunde inte startas. Kontrollera att Spotify-appen är öppen och försök igen.')
+        }
+      }, 2000) // Vänta 2 sekunder mellan försök
+      
+      return () => clearTimeout(retryTimer)
+    }
+  }, [pendingPlayRequest, isReady, retryCount, maxRetries])
+
+  // Ladda tokens från localStorage vid sidladdning
   useEffect(() => {
     const savedToken = localStorage.getItem('spotify_access_token')
-    if (savedToken) {
-      console.log('=== Loading saved access token from localStorage ===')
-      // Kontrollera om token fortfarande är giltig genom att testa den
-      checkTokenValidity(savedToken)
+    const savedRefreshToken = localStorage.getItem('spotify_refresh_token')
+    const savedExpiry = localStorage.getItem('spotify_token_expiry')
+    
+    if (savedToken && savedRefreshToken) {
+      console.log('=== Loading saved tokens from localStorage ===')
+      const expiryTime = savedExpiry ? parseInt(savedExpiry) : null
+      
+      // Kontrollera om token fortfarande är giltig
+      if (expiryTime && Date.now() < expiryTime) {
+        console.log('Token is still valid, using saved token')
+        setAccessToken(savedToken)
+        setRefreshToken(savedRefreshToken)
+        setTokenExpiry(expiryTime)
+        checkTokenValidity(savedToken)
+      } else if (savedRefreshToken) {
+        console.log('Token expired, attempting refresh')
+        refreshAccessToken(savedRefreshToken)
+      } else {
+        console.log('No refresh token available, clearing expired tokens')
+        handleLogout()
+      }
+    } else {
+      console.log('No saved tokens found')
+      // Rensa eventuella gamla tokens som kan finnas
+      localStorage.removeItem('spotify_access_token')
+      localStorage.removeItem('spotify_refresh_token')
+      localStorage.removeItem('spotify_token_expiry')
     }
   }, [])
+
+  // Automatisk token-förnyelse innan den går ut
+  useEffect(() => {
+    if (!refreshToken || !tokenExpiry) return
+
+    const timeUntilExpiry = tokenExpiry - Date.now()
+    const refreshTime = Math.max(timeUntilExpiry - 60000, 0) // Förnya 1 minut innan utgång
+
+    console.log(`Token expires in ${Math.round(timeUntilExpiry / 1000)}s, will refresh in ${Math.round(refreshTime / 1000)}s`)
+
+    const refreshTimer = setTimeout(() => {
+      console.log('Auto-refreshing token...')
+      refreshAccessToken(refreshToken)
+    }, refreshTime)
+
+    return () => clearTimeout(refreshTimer)
+  }, [refreshToken, tokenExpiry])
 
   // Ladda useStartTimes när userId ändras
   useEffect(() => {
@@ -101,6 +193,82 @@ export default function Home() {
       }
     }
   }, [userId])
+
+  // Funktion för att logga ut användaren
+  const handleLogout = () => {
+    console.log('Logging out user')
+    
+    // Rensa alla tokens från localStorage
+    localStorage.removeItem('spotify_access_token')
+    localStorage.removeItem('spotify_refresh_token')
+    localStorage.removeItem('spotify_token_expiry')
+    
+    // Rensa alla state-variabler
+    setAccessToken(null)
+    setRefreshToken(null)
+    setTokenExpiry(null)
+    setUserId(null)
+    setCurrentTrackIndex(-1)
+    
+    // Rensa kö och sökresultat
+    setPlaylist([])
+    setSearchResults([])
+    setPlaylistName('')
+    
+    // Rensa alla inställningar
+    setStartPoints({})
+    setUseStartTimes({})
+    setFadeInSettings({})
+    
+    console.log('User logged out successfully')
+  }
+
+  // Funktion för att förnya access token
+  const refreshAccessToken = async (refreshToken: string) => {
+    try {
+      console.log('Refreshing token...')
+      const response = await fetch('/api/auth/refresh', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ refreshToken })
+      })
+
+      if (!response.ok) {
+        const errorData = await response.json()
+        console.error('Token refresh failed:', errorData)
+        
+        // Om refresh token är ogiltig, rensa alla tokens
+        if (errorData.error === 'invalid_grant') {
+          console.log('Invalid refresh token, clearing all tokens')
+          handleLogout()
+          alert('Din Spotify-session har gått ut. Logga in igen för att fortsätta.')
+          return
+        }
+        
+        throw new Error(errorData.error_description || 'Kunde inte förnya token')
+      }
+
+      const data = await response.json()
+      const newExpiry = Date.now() + (data.expires_in * 1000)
+      
+      // Spara nya tokens
+      localStorage.setItem('spotify_access_token', data.access_token)
+      localStorage.setItem('spotify_refresh_token', data.refresh_token)
+      localStorage.setItem('spotify_token_expiry', newExpiry.toString())
+      
+      setAccessToken(data.access_token)
+      setRefreshToken(data.refresh_token)
+      setTokenExpiry(newExpiry)
+      
+      console.log('Token refreshed successfully')
+    } catch (error) {
+      console.error('Token refresh error:', error)
+      
+      // Rensa alla tokens vid fel
+      handleLogout()
+      alert('Kunde inte förnya din Spotify-session. Logga in igen för att fortsätta.')
+    }
+  }
 
   // Ladda useStartTimes när playlist ändras
   useEffect(() => {
@@ -145,7 +313,9 @@ export default function Home() {
       const serverData = await fetchServerQueuesAndStartPoints(userId)
       const serverStartPoints = serverData.startPoints || {}
       const serverUseStartTimes = serverData.useStartTimes || {}
+      const serverFadeInSettings = serverData.fadeInSettings || {}
       setStartPoints(serverStartPoints) // Spara i state
+      setFadeInSettings(serverFadeInSettings) // Spara fade-in settings i state
 
       // Sätt default useStartTimes till true för alla låtar med starttid om det saknas
       const newUseStartTimes = { ...serverUseStartTimes }
@@ -342,40 +512,44 @@ export default function Home() {
   const checkTokenValidity = async (token: string) => {
     try {
       const response = await fetch('https://api.spotify.com/v1/me', {
-        headers: {
-          'Authorization': `Bearer ${token}`
-        }
+        headers: { 'Authorization': `Bearer ${token}` }
       })
       
-      if (response.ok) {
-        const userData = await response.json()
-        setAccessToken(token)
-        setUserId(userData.id)
-        console.log('Token valid, user ID:', userData.id)
-      } else {
-        console.log('Saved token is invalid, clearing it')
-        localStorage.removeItem('spotify_access_token')
-        setAccessToken(null)
-        setUserId(null)
+      if (!response.ok) {
+        console.log('Token validation failed, status:', response.status)
+        
+        if (response.status === 401) {
+          // Token är ogiltig, försök förnya
+          const savedRefreshToken = localStorage.getItem('spotify_refresh_token')
+          if (savedRefreshToken) {
+            console.log('Attempting token refresh due to 401')
+            await refreshAccessToken(savedRefreshToken)
+          } else {
+            console.log('No refresh token available, logging out')
+            handleLogout()
+            alert('Din Spotify-session har gått ut. Logga in igen för att fortsätta.')
+          }
+        } else {
+          console.error('Unexpected error during token validation:', response.status)
+          handleLogout()
+          alert('Ett oväntat fel uppstod. Logga in igen för att fortsätta.')
+        }
+        return false
       }
+      
+      const userData = await response.json()
+      setUserId(userData.id)
+      console.log('Token is valid, user ID:', userData.id)
+      return true
     } catch (error) {
       console.error('Error checking token validity:', error)
-      localStorage.removeItem('spotify_access_token')
-      setAccessToken(null)
-      setUserId(null)
+      handleLogout()
+      alert('Kunde inte verifiera din Spotify-session. Logga in igen för att fortsätta.')
+      return false
     }
   }
 
-  // Spara access token till localStorage när den ändras
-  useEffect(() => {
-    if (accessToken) {
-      console.log('=== Saving access token to localStorage ===')
-      localStorage.setItem('spotify_access_token', accessToken)
-    } else {
-      console.log('=== Removing access token from localStorage ===')
-      localStorage.removeItem('spotify_access_token')
-    }
-  }, [accessToken])
+
 
   const handleSearch = async (query: string) => {
     if (!accessToken) {
@@ -396,10 +570,28 @@ export default function Home() {
         setSearchResults(data.tracks || [])
       } else {
         console.error('Search failed:', response.status)
-        // Om sökningen misslyckas på grund av ogiltig token, rensa den
+        // Om sökningen misslyckas på grund av ogiltig token, försök förnya
         if (response.status === 401) {
-          console.log('Token expired, clearing access token')
-          setAccessToken(null)
+          console.log('Token expired during search, attempting refresh')
+          const savedRefreshToken = localStorage.getItem('spotify_refresh_token')
+          if (savedRefreshToken) {
+            await refreshAccessToken(savedRefreshToken)
+            // Försök söka igen med den nya token
+            if (accessToken) {
+              const retryResponse = await fetch(`/api/search?q=${encodeURIComponent(query)}`, {
+                headers: {
+                  'Authorization': `Bearer ${accessToken}`
+                }
+              })
+              if (retryResponse.ok) {
+                const retryData = await retryResponse.json()
+                setSearchResults(retryData.tracks || [])
+              }
+            }
+          } else {
+            console.log('No refresh token available, clearing access token')
+            setAccessToken(null)
+          }
         }
       }
     } catch (error) {
@@ -478,38 +670,68 @@ export default function Home() {
   }
 
   const handlePlayTrack = async (track: Track, startTime?: number) => {
-    if (!isReady) {
-      console.log('Spotify Player not ready yet')
+    if (!isReady || !accessToken) {
+      const message = !isReady 
+        ? 'Spotify-spelaren är inte redo än. Vänta lite och försök igen. Om problemet kvarstår, kontrollera att Spotify-appen är öppen.'
+        : 'Ingen Spotify-åtkomst. Logga in igen för att fortsätta.'
+      
+      // Spara request för senare om spelaren inte är redo
+      if (!isReady) {
+        console.log('Player not ready, saving request for later')
+        setPendingPlayRequest({ track, startTime })
+        setRetryCount(0) // Återställ retry-räknare
+      }
+      
+      alert(message)
       return
     }
 
-    const index = playlist.findIndex(t => t.id === track.id)
-    
-    if (index !== -1) {
-      setCurrentTrackIndex(index)
+    try {
+      console.log('=== handlePlayTrack called ===')
+      console.log('Track:', track.name)
+      console.log('Start time:', startTime)
+      console.log('Is ready:', isReady)
+      console.log('Access token exists:', !!accessToken)
+      
+      // Sätt currentTrackIndex för denna låt
+      const trackIndex = playlist.findIndex(t => t.id === track.id)
+      if (trackIndex !== -1) {
+        setCurrentTrackIndex(trackIndex)
+        console.log('Set currentTrackIndex to:', trackIndex)
+      }
+      
+      // Kontrollera fade-in inställning för denna låt
+      const shouldFadeIn = fadeInSettings[track.id] || false
+      console.log('Fade-in setting for track:', shouldFadeIn)
+      
+      await playTrack(track, startTime, shouldFadeIn)
+      console.log('Track play successful')
+    } catch (error) {
+      console.error('Fel vid uppspelning av låt:', error)
+      
+      // Om det är ett 401-fel, försök förnya token och spela igen
+      if (error instanceof Error && error.message.includes('401')) {
+        console.log('401 error detected, attempting token refresh')
+        try {
+          if (refreshToken) {
+            await refreshAccessToken(refreshToken)
+            // Försök spela igen efter token-förnyelse
+            const shouldFadeIn = fadeInSettings[track.id] || false
+            await playTrack(track, startTime, shouldFadeIn)
+            console.log('Track play successful after token refresh')
+          } else {
+            alert('Din Spotify-session har gått ut. Logga in igen för att fortsätta.')
+            handleLogout()
+          }
+        } catch (refreshError) {
+          console.error('Fel vid token-förnyelse:', refreshError)
+          alert('Kunde inte förnya din Spotify-session. Logga in igen för att fortsätta.')
+          handleLogout()
+        }
+      } else {
+        alert(`Kunde inte spela låten: ${error instanceof Error ? error.message : 'Okänt fel'}`)
+      }
     }
-
-    // startTime kan vara i sekunder (från UI) eller millisekunder (från track.startTime)
-    // Om startTime är mindre än 1000, antar vi att det är i sekunder
-    let positionMs = 0
-    if (startTime !== undefined) {
-      // Om startTime skickas explicit, använd den
-      positionMs = startTime < 1000 ? startTime * 1000 : startTime
-    } else if (track.startTime && useStartTimes[track.id]) {
-      // Annars använd track.startTime endast om useStartTimes är true för denna låt
-      positionMs = track.startTime
-    }
-    // Om inget av ovanstående, använd positionMs = 0 (spela från början)
-    
-    console.log('handlePlayTrack:', {
-      trackName: track.name,
-      startTime,
-      trackStartTime: track.startTime,
-      positionMs,
-      isSeconds: startTime && startTime < 1000
-    })
-    
-    await playTrack(track, positionMs)
   }
 
   const handlePlayNext = async () => {
@@ -519,13 +741,17 @@ export default function Home() {
       isShuffled
     })
     
-    if (playlist.length === 0 || currentTrackIndex === -1) {
-      console.log('handlePlayNext: playlist empty or no current track, returning')
+    if (playlist.length === 0) {
+      console.log('handlePlayNext: playlist empty, returning')
       return
     }
 
     let nextIndex: number
-    if (isShuffled) {
+    if (currentTrackIndex === -1) {
+      // Om ingen låt spelas just nu, börja med första låten
+      nextIndex = 0
+      console.log('No current track, starting with first track')
+    } else if (isShuffled) {
       nextIndex = Math.floor(Math.random() * playlist.length)
     } else {
       nextIndex = (currentTrackIndex + 1) % playlist.length
@@ -538,6 +764,9 @@ export default function Home() {
     const shouldUseStartTime = useStartTimes[nextTrack.id] && nextTrack.startTime
     const startTimeMs = shouldUseStartTime && nextTrack.startTime ? nextTrack.startTime : undefined
     
+    // Kontrollera fade-in inställning för nästa låt
+    const shouldFadeIn = fadeInSettings[nextTrack.id] || false
+    
     console.log('handlePlayNext:', { 
       trackName: nextTrack.name, 
       trackId: nextTrack.id,
@@ -545,16 +774,13 @@ export default function Home() {
       shouldUseStartTime,
       useStartTime: useStartTimes[nextTrack.id],
       allUseStartTimes: useStartTimes,
+      fadeIn: shouldFadeIn,
       playlistLength: playlist.length,
-      currentTrackIndex
+      currentTrackIndex: nextIndex
     })
     
-    // Skicka startTimeMs direkt till playTrack (redan i millisekunder)
-    if (startTimeMs) {
-      await playTrack(nextTrack, startTimeMs)
-    } else {
-      await playTrack(nextTrack)
-    }
+    // Skicka startTimeMs och fadeIn direkt till playTrack
+    await handlePlayTrack(nextTrack, startTimeMs)
   }
 
   // Sätt ref för onTrackEnd callback
@@ -562,18 +788,23 @@ export default function Home() {
     console.log('Setting onTrackEndRef.current to handlePlayNext:', {
       playlistLength: playlist.length,
       currentTrackIndex,
-      useStartTimesKeys: Object.keys(useStartTimes)
+      useStartTimesKeys: Object.keys(useStartTimes),
+      fadeInSettingsKeys: Object.keys(fadeInSettings)
     })
     onTrackEndRef.current = handlePlayNext
-  }, [playlist, currentTrackIndex, useStartTimes])
+  }, [playlist, currentTrackIndex, useStartTimes, fadeInSettings])
 
   const handlePlayPrevious = async () => {
-    if (playlist.length === 0 || currentTrackIndex === -1) {
+    if (playlist.length === 0) {
       return
     }
 
     let prevIndex: number
-    if (isShuffled) {
+    if (currentTrackIndex === -1) {
+      // Om ingen låt spelas just nu, börja med sista låten
+      prevIndex = playlist.length - 1
+      console.log('No current track, starting with last track')
+    } else if (isShuffled) {
       prevIndex = Math.floor(Math.random() * playlist.length)
     } else {
       prevIndex = currentTrackIndex === 0 ? playlist.length - 1 : currentTrackIndex - 1
@@ -586,6 +817,9 @@ export default function Home() {
     const shouldUseStartTime = useStartTimes[prevTrack.id] && prevTrack.startTime
     const startTimeMs = shouldUseStartTime && prevTrack.startTime ? prevTrack.startTime : undefined
     
+    // Kontrollera fade-in inställning för föregående låt
+    const shouldFadeIn = fadeInSettings[prevTrack.id] || false
+    
     console.log('handlePlayPrevious:', { 
       trackName: prevTrack.name, 
       trackId: prevTrack.id,
@@ -593,8 +827,9 @@ export default function Home() {
       shouldUseStartTime,
       useStartTime: useStartTimes[prevTrack.id],
       allUseStartTimes: useStartTimes,
+      fadeIn: shouldFadeIn,
       playlistLength: playlist.length,
-      currentTrackIndex
+      currentTrackIndex: prevIndex
     })
     
     await handlePlayTrack(prevTrack, startTimeMs)
@@ -653,23 +888,22 @@ export default function Home() {
     })
   }
 
-  const handleAuthSuccess = async (token: string) => {
+  const handleAuthSuccess = async (token: string, refreshToken: string, expiresIn: number) => {
+    const expiryTime = Date.now() + (expiresIn * 1000)
+    
+    // Spara tokens till localStorage
+    localStorage.setItem('spotify_access_token', token)
+    localStorage.setItem('spotify_refresh_token', refreshToken)
+    localStorage.setItem('spotify_token_expiry', expiryTime.toString())
+    
     setAccessToken(token)
+    setRefreshToken(refreshToken)
+    setTokenExpiry(expiryTime)
+    
     await fetchUserId(token)
   }
 
-  // Rensa kö när användaren loggar ut
-  const handleLogout = () => {
-    setAccessToken(null)
-    setUserId(null)
-    setPlaylist([])
-    setSearchResults([])
-    setCurrentTrackIndex(-1)
-    setIsShuffled(false)
-    
-    // Rensa endast access token, behåll spellistan och starttider
-    console.log('Logged out, cleared access token but kept playlist data')
-  }
+
 
   const handleReorderTracks = async (newPlaylist: Track[]) => {
     console.log('handleReorderTracks called:', {
@@ -711,26 +945,34 @@ export default function Home() {
   const handleClearQueue = () => {
     setPlaylist([])
     setCurrentTrackIndex(-1)
-    // Behåll useStartTimes och starttider - de kan användas för framtida låtar
-    console.log('Kö rensad, starttid-inställningar behållna')
+    setPlaylistName('')
+  }
+
+  // Växla fade-in för en låt
+  const handleToggleFadeIn = async (trackId: string) => {
+    const newFadeInSettings = { ...fadeInSettings }
+    newFadeInSettings[trackId] = !newFadeInSettings[trackId]
+    setFadeInSettings(newFadeInSettings)
     
-    // Spara tom kö till databasen
+    // Spara till servern
     if (userId) {
-      setTimeout(async () => {
-        try {
-          await saveServerQueuesAndStartPoints(userId, [{
-            id: `current_queue_${Date.now()}`,
+      try {
+        const serverData = await fetchServerQueuesAndStartPoints(userId)
+        await fetch('/api/queues', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
             userId,
-            name: 'Tom kö',
-            tracks: [],
-            createdAt: new Date().toISOString(),
-            updatedAt: new Date().toISOString()
-          }])
-          console.log('Empty queue saved to database')
-        } catch (error) {
-          console.error('Fel vid sparande av tom kö till databasen:', error)
-        }
-      }, 100)
+            queues: serverData.queues || [],
+            startPoints: serverData.startPoints || {},
+            useStartTimes: serverData.useStartTimes || {},
+            fadeInSettings: newFadeInSettings
+          })
+        })
+        console.log('Fade-in settings saved:', newFadeInSettings)
+      } catch (error) {
+        console.error('Fel vid sparande av fade-in settings:', error)
+      }
     }
   }
 
@@ -747,11 +989,12 @@ export default function Home() {
       const queues = serverData.queues || []
       const startPoints = serverData.startPoints || {}
       const useStartTimes = serverData.useStartTimes || {}
+      const fadeInSettings = serverData.fadeInSettings || {}
       // Skicka tillbaka hela objektet, men med uppdaterad useStartTimes
       await fetch('/api/queues', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ userId, queues, startPoints, useStartTimes })
+        body: JSON.stringify({ userId, queues, startPoints, useStartTimes, fadeInSettings })
       })
     }
     syncUseStartTimes()
@@ -764,119 +1007,362 @@ export default function Home() {
           <SpotifyAuth onAuthSuccess={handleAuthSuccess} />
         </div>
       ) : (
-        <div className="flex h-screen">
-          {/* Vänster panel - Sökning och spellistor */}
-          <div className="w-1/2 bg-spotify-dark p-6 overflow-y-auto">
-            <div className="mb-6">
-              <button
-                onClick={handleLogout}
-                className="px-4 py-2 bg-red-600 text-white rounded hover:bg-red-700 mb-4"
-              >
-                Logga ut
-              </button>
+        <>
+          {/* Desktop layout */}
+          <div className="hidden lg:flex flex-col lg:flex-row h-screen">
+            {/* Header - Desktop */}
+            <div className="lg:hidden bg-spotify-dark border-b border-gray-800 p-4 flex-shrink-0">
+              <div className="flex items-center justify-between">
+                <h1 className="text-xl font-bold text-white">Spotify Playlist</h1>
+                <div className="flex items-center space-x-2">
+                  {/* Statusindikator */}
+                  <div className={`w-3 h-3 rounded-full ${isConnected ? 'bg-green-500' : 'bg-red-500'}`} 
+                       title={isConnected ? 'Ansluten till Spotify' : 'Inte ansluten till Spotify'} />
+                  <button
+                    onClick={handleLogout}
+                    className="px-3 py-1 bg-red-600 text-white text-sm rounded hover:bg-red-700"
+                  >
+                    Logga ut
+                  </button>
+                </div>
+              </div>
             </div>
-            
-            {/* Sökning */}
-            <div className="mb-8">
-              <h2 className="text-2xl font-bold text-white mb-4">Sök låtar</h2>
-              <SearchBar onSearch={handleSearch} isLoading={isLoading} />
-              {searchResults.length > 0 && (
-                <>
-                  <div className="mt-2 mb-4">
+
+            {/* Vänster panel - Sökning och spellistor */}
+            <div className="lg:w-1/2 bg-spotify-dark p-4 lg:p-6 overflow-y-auto flex-1 min-h-0">
+              {/* Desktop header */}
+              <div className="hidden lg:block mb-6">
+                <div className="flex items-center justify-between mb-4">
+                  <div className="flex items-center space-x-2">
+                    {/* Statusindikator */}
+                    <div className={`w-3 h-3 rounded-full ${isConnected ? 'bg-green-500' : 'bg-red-500'}`} 
+                         title={isConnected ? 'Ansluten till Spotify' : 'Inte ansluten till Spotify'} />
+                    <span className="text-sm text-gray-400">
+                      {isConnected ? 'Ansluten' : 'Inte ansluten'}
+                    </span>
+                  </div>
+                  <div className="flex items-center space-x-2">
                     <button
-                      onClick={handleClearSearch}
-                      className="px-3 py-1 bg-gray-600 text-white text-sm rounded hover:bg-gray-700 transition-colors"
+                      onClick={handleClearQueue}
+                      className="px-4 py-2 bg-yellow-600 text-white rounded hover:bg-yellow-700"
                     >
-                      Rensa sökresultat
+                      Rensa kö
+                    </button>
+                    <button
+                      onClick={handleLogout}
+                      className="px-4 py-2 bg-red-600 text-white rounded hover:bg-red-700"
+                    >
+                      Logga ut
                     </button>
                   </div>
-                  <TrackList
-                    tracks={searchResults}
-                    onAddToPlaylist={handleAddToPlaylist}
+                </div>
+              </div>
+              
+              {/* Sökning - Alltid synlig på desktop */}
+              <div className="mb-6 lg:mb-8">
+                <h2 className="text-xl lg:text-2xl font-bold text-white mb-4">Sök låtar</h2>
+                <SearchBar onSearch={handleSearch} isLoading={isLoading} />
+                {searchResults.length > 0 && (
+                  <>
+                    <div className="mt-2 mb-4">
+                      <button
+                        onClick={handleClearSearch}
+                        className="px-3 py-1 bg-gray-600 text-white text-sm rounded hover:bg-gray-700 transition-colors"
+                      >
+                        Rensa sökresultat
+                      </button>
+                    </div>
+                    <TrackList
+                      tracks={searchResults}
+                      onAddToPlaylist={handleAddToPlaylist}
+                      onPlayTrack={handlePlayTrack}
+                      title="Sökresultat"
+                    />
+                  </>
+                )}
+              </div>
+
+              {/* Sparade köer - Kollapsbar på desktop */}
+              <div className="mb-6">
+                <button
+                  onClick={() => setShowQueues(v => !v)}
+                  className="w-full flex items-center justify-between px-4 py-3 bg-gray-700 text-white font-semibold rounded-lg hover:bg-gray-600 mb-2 transition-colors"
+                >
+                  <div className="flex items-center space-x-2">
+                    <span className="text-sm lg:text-base">Sparade köer</span>
+                    <span className="text-xs text-gray-400">({playlist.length} låtar)</span>
+                  </div>
+                  <span className="text-lg">{showQueues ? '▲' : '▼'}</span>
+                </button>
+                {showQueues && (
+                  <div className="bg-spotify-black rounded-lg p-3">
+                    <QueueSaver
+                      playlist={playlist}
+                      accessToken={accessToken}
+                      userId={userId}
+                      onLoadQueue={async (tracks, name) => {
+                        const tracksWithStartTimes = await loadSavedStartTimes(tracks)
+                        setPlaylist(tracksWithStartTimes)
+                        setPlaylistName(name)
+                        console.log('Loaded queue:', { name, trackCount: tracks.length, tracksWithStartTimes: tracksWithStartTimes.map(t => ({ name: t.name, startTime: t.startTime })) })
+                      }}
+                    />
+                  </div>
+                )}
+                <div className="text-xs text-gray-400 mt-1">Köer sparas i databasen och synkroniseras mellan enheter.</div>
+              </div>
+
+              {/* Spotify-spellistor - Kollapsbar på desktop */}
+              <div className="mb-6">
+                <button
+                  onClick={() => setShowSpotifyLists(v => !v)}
+                  className="w-full flex items-center justify-between px-4 py-3 bg-gray-700 text-white font-semibold rounded-lg hover:bg-gray-600 mb-2 transition-colors"
+                >
+                  <span className="text-sm lg:text-base">Spotify-spellistor</span>
+                  <span className="text-lg">{showSpotifyLists ? '▲' : '▼'}</span>
+                </button>
+                {showSpotifyLists && (
+                  <div className="bg-spotify-black rounded-lg p-3">
+                    <SpotifyPlaylistLoader
+                      accessToken={accessToken}
+                      onAddToPlaylist={handleAddToPlaylist}
+                      onPlayTrack={handlePlayTrack}
+                      onAddAllToQueue={handleAddAllToQueue}
+                    />
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Höger panel - Kö */}
+            <div className="lg:w-1/2 bg-spotify-black p-4 lg:p-6 flex-1 flex flex-col min-h-0">
+              <QueueManager
+                playlist={playlist}
+                onRemoveTrack={handleRemoveFromPlaylist}
+                onPlayTrack={handlePlayTrack}
+                onReorderTracks={handleReorderTracks}
+                onClearQueue={handleClearQueue}
+                accessToken={accessToken}
+                userId={userId}
+                useStartTimes={useStartTimes}
+                setUseStartTimes={setUseStartTimes}
+                startPoints={startPoints}
+                fadeInSettings={fadeInSettings}
+                onToggleFadeIn={handleToggleFadeIn}
+                currentTrack={currentTrack}
+                // Spotify Player props
+                isPlaying={isPlaying}
+                currentTime={currentTime}
+                duration={duration}
+                volume={volume}
+                isShuffled={isShuffled}
+                isPlayerReady={isReady}
+                onPlayNext={handlePlayNext}
+                onPlayPrevious={handlePlayPrevious}
+                onTogglePlay={handleTogglePlay}
+                onVolumeChange={handleVolumeChange}
+                onSeek={handleSeek}
+                onShuffle={handleShuffle}
+                isPlayerMinimized={isPlayerMinimized}
+                onToggleMinimize={() => setIsPlayerMinimized(!isPlayerMinimized)}
+              />
+            </div>
+          </div>
+
+          {/* Mobil layout */}
+          <div className="lg:hidden">
+            {/* Header */}
+            <div className="bg-spotify-dark border-b border-gray-800 p-4 flex-shrink-0">
+              <div className="flex items-center justify-between">
+                <h1 className="text-xl font-bold text-white">Spotify Playlist</h1>
+                <div className="flex items-center space-x-2">
+                  <div className={`w-3 h-3 rounded-full ${isConnected ? 'bg-green-500' : 'bg-red-500'}`} 
+                       title={isConnected ? 'Ansluten till Spotify' : 'Inte ansluten till Spotify'} />
+                  <button
+                    onClick={handleClearQueue}
+                    className="px-3 py-1 bg-yellow-600 text-white text-sm rounded hover:bg-yellow-700"
+                  >
+                    Rensa kö
+                  </button>
+                  <button
+                    onClick={handleLogout}
+                    className="px-3 py-1 bg-red-600 text-white text-sm rounded hover:bg-red-700"
+                  >
+                    Logga ut
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {/* Tab-innehåll */}
+            <div className="pb-32">
+              {/* Sök-tab */}
+              {activeTab === 'search' && (
+                <div className="p-4">
+                  <h2 className="text-xl font-bold text-white mb-4">Sök låtar</h2>
+                  <SearchBar onSearch={handleSearch} isLoading={isLoading} />
+                  {searchResults.length > 0 && (
+                    <>
+                      <div className="mt-2 mb-4">
+                        <button
+                          onClick={handleClearSearch}
+                          className="px-3 py-1 bg-gray-600 text-white text-sm rounded hover:bg-gray-700 transition-colors"
+                        >
+                          Rensa sökresultat
+                        </button>
+                      </div>
+                      <TrackList
+                        tracks={searchResults}
+                        onAddToPlaylist={handleAddToPlaylist}
+                        onPlayTrack={handlePlayTrack}
+                        title="Sökresultat"
+                      />
+                    </>
+                  )}
+                </div>
+              )}
+
+              {/* Kö-tab */}
+              {activeTab === 'queue' && (
+                <div className="p-4 pb-8">
+                  <QueueManager
+                    playlist={playlist}
+                    onRemoveTrack={handleRemoveFromPlaylist}
                     onPlayTrack={handlePlayTrack}
-                    title="Sökresultat"
+                    onReorderTracks={handleReorderTracks}
+                    onClearQueue={handleClearQueue}
+                    accessToken={accessToken}
+                    userId={userId}
+                    useStartTimes={useStartTimes}
+                    setUseStartTimes={setUseStartTimes}
+                    startPoints={startPoints}
+                    fadeInSettings={fadeInSettings}
+                    onToggleFadeIn={handleToggleFadeIn}
+                    currentTrack={currentTrack}
                   />
-                </>
+                </div>
+              )}
+
+              {/* Sparade köer-tab */}
+              {activeTab === 'saved' && (
+                <div className="p-4">
+                  <h2 className="text-xl font-bold text-white mb-4">Sparade köer</h2>
+                  <div className="bg-spotify-black rounded-lg p-3">
+                    <QueueSaver
+                      playlist={playlist}
+                      accessToken={accessToken}
+                      userId={userId}
+                      onLoadQueue={async (tracks, name) => {
+                        const tracksWithStartTimes = await loadSavedStartTimes(tracks)
+                        setPlaylist(tracksWithStartTimes)
+                        setPlaylistName(name)
+                        console.log('Loaded queue:', { name, trackCount: tracks.length, tracksWithStartTimes: tracksWithStartTimes.map(t => ({ name: t.name, startTime: t.startTime })) })
+                      }}
+                    />
+                  </div>
+                  <div className="text-xs text-gray-400 mt-2">Köer sparas i databasen och synkroniseras mellan enheter.</div>
+                </div>
+              )}
+
+              {/* Spotify-spellistor-tab */}
+              {activeTab === 'playlists' && (
+                <div className="p-4">
+                  <h2 className="text-xl font-bold text-white mb-4">Spotify-spellistor</h2>
+                  <div className="bg-spotify-black rounded-lg p-3">
+                    <SpotifyPlaylistLoader
+                      accessToken={accessToken}
+                      onAddToPlaylist={handleAddToPlaylist}
+                      onPlayTrack={handlePlayTrack}
+                      onAddAllToQueue={handleAddAllToQueue}
+                    />
+                  </div>
+                </div>
               )}
             </div>
-            {/* Sparade köer */}
-            <div className="mb-6">
-              <button
-                onClick={() => setShowQueues(v => !v)}
-                className="w-full flex items-center justify-between px-4 py-2 bg-gray-700 text-white font-semibold rounded-lg hover:bg-gray-600 mb-2"
-              >
-                <span>Sparade köer (lokalt)</span>
-                <span>{showQueues ? '▲' : '▼'}</span>
-              </button>
-              {showQueues && (
-                <QueueSaver
+
+            {/* Bottom navigation - Alltid synlig på mobil */}
+            <div className="fixed bottom-0 left-0 right-0 bg-spotify-dark border-t border-gray-800 lg:hidden z-10">
+              <div className="flex items-center justify-around py-2">
+                <button
+                  onClick={() => setActiveTab('search')}
+                  className={`flex flex-col items-center space-y-1 px-3 py-2 rounded-lg transition-colors ${
+                    activeTab === 'search' ? 'text-spotify-green' : 'text-gray-400 hover:text-white'
+                  }`}
+                >
+                  <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
+                  </svg>
+                  <span className="text-xs">Sök</span>
+                </button>
+
+                <button
+                  onClick={() => setActiveTab('queue')}
+                  className={`flex flex-col items-center space-y-1 px-3 py-2 rounded-lg transition-colors ${
+                    activeTab === 'queue' ? 'text-spotify-green' : 'text-gray-400 hover:text-white'
+                  }`}
+                >
+                  <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-3c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zM9 10l12-3"/>
+                  </svg>
+                  <span className="text-xs">Kö</span>
+                </button>
+
+                <button
+                  onClick={() => setActiveTab('saved')}
+                  className={`flex flex-col items-center space-y-1 px-3 py-2 rounded-lg transition-colors ${
+                    activeTab === 'saved' ? 'text-spotify-green' : 'text-gray-400 hover:text-white'
+                  }`}
+                >
+                  <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 5a2 2 0 012-2h10a2 2 0 012 2v16l-7-3.5L5 21V5z"/>
+                  </svg>
+                  <span className="text-xs">Sparade</span>
+                </button>
+
+                <button
+                  onClick={() => setActiveTab('playlists')}
+                  className={`flex flex-col items-center space-y-1 px-3 py-2 rounded-lg transition-colors ${
+                    activeTab === 'playlists' ? 'text-spotify-green' : 'text-gray-400 hover:text-white'
+                  }`}
+                >
+                  <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-3c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zM9 10l12-3"/>
+                  </svg>
+                  <span className="text-xs">Spellistor</span>
+                </button>
+              </div>
+            </div>
+
+                          {/* Spotify Player - Endast synlig på mobil */}
+              <div className="lg:hidden">
+                <SpotifyPlayer
+                  currentTrack={currentTrack}
+                  isPlaying={isPlaying}
+                  currentTime={currentTime}
+                  duration={duration}
+                  volume={volume}
+                  isShuffled={isShuffled}
+                  isPlayerReady={isReady}
+                  onPlayNext={handlePlayNext}
+                  onPlayPrevious={handlePlayPrevious}
+                  onTogglePlay={handleTogglePlay}
+                  onVolumeChange={handleVolumeChange}
+                  onSeek={handleSeek}
+                  onShuffle={handleShuffle}
+                  isMinimized={isPlayerMinimized}
+                  onToggleMinimize={() => setIsPlayerMinimized(!isPlayerMinimized)}
                   playlist={playlist}
-                  accessToken={accessToken}
-                  userId={userId}
-                  onLoadQueue={async (tracks, name) => {
-                    // Ladda sparade starttider för alla låtar i kön
-                    const tracksWithStartTimes = await loadSavedStartTimes(tracks)
-                    setPlaylist(tracksWithStartTimes)
-                    setPlaylistName(name)
-                    console.log('Loaded queue:', { name, trackCount: tracks.length, tracksWithStartTimes: tracksWithStartTimes.map(t => ({ name: t.name, startTime: t.startTime })) })
-                  }}
-                />
-              )}
-              <div className="text-xs text-gray-400 mt-1">Köer sparas endast i denna webbläsare, inte på Spotify-kontot.</div>
-            </div>
-            {/* Spotify-spellistor */}
-            <div className="mb-6">
-              <button
-                onClick={() => setShowSpotifyLists(v => !v)}
-                className="w-full flex items-center justify-between px-4 py-2 bg-gray-700 text-white font-semibold rounded-lg hover:bg-gray-600 mb-2"
-              >
-                <span>Spotify-spellistor</span>
-                <span>{showSpotifyLists ? '▲' : '▼'}</span>
-              </button>
-              {showSpotifyLists && (
-                <SpotifyPlaylistLoader
-                  accessToken={accessToken}
-                  onAddToPlaylist={handleAddToPlaylist}
+                  fadeInSettings={fadeInSettings}
                   onPlayTrack={handlePlayTrack}
-                  onAddAllToQueue={handleAddAllToQueue}
+                  startPoints={startPoints}
+                  useStartTimes={useStartTimes}
                 />
-              )}
-            </div>
-            {/* Resten av vänsterpanelen ... */}
+              </div>
 
-
+              {/* Padding för att undvika overlap med bottom navigation och player */}
+              <div className="h-16 lg:h-32"></div>
           </div>
-
-          {/* Höger panel - Kö och nuvarande låt */}
-          <div className="w-1/2 bg-spotify-black p-6">
-            {/* Ta bort enhetsval och status här */}
-            <QueueManager
-              playlist={playlist}
-              onRemoveTrack={handleRemoveFromPlaylist}
-              onPlayTrack={handlePlayTrack}
-              onPlayNext={handlePlayNext}
-              onPlayPrevious={handlePlayPrevious}
-              onTogglePlay={handleTogglePlay}
-              onVolumeChange={handleVolumeChange}
-              onSeek={handleSeek}
-              onShuffle={handleShuffle}
-              isPlaying={isPlaying}
-              currentTrack={currentTrack}
-              currentTime={currentTime}
-              duration={duration}
-              volume={volume}
-              isShuffled={isShuffled}
-              currentTrackIndex={currentTrackIndex}
-              onReorderTracks={handleReorderTracks}
-              onClearQueue={handleClearQueue}
-              accessToken={accessToken}
-              userId={userId}
-              useStartTimes={useStartTimes}
-              setUseStartTimes={setUseStartTimes}
-              startPoints={startPoints}
-            />
-          </div>
-        </div>
+        </>
       )}
     </div>
   )
